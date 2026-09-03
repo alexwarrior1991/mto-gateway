@@ -1,0 +1,93 @@
+name: Promote image
+
+# Promocion manual de una imagen que YA existe en GHCR. No construye nada y no toca ningun
+# servidor: solo le pone una etiqueta estable a un digest concreto, de modo que quien despliegue
+# tenga un nombre fijo al que apuntar y se sepa exactamente que se promociono y cuando.
+#
+# El dia que haya un entorno de verdad, el paso de despliegue se engancha aqui: el digest ya esta
+# resuelto y elegido a mano, que es la parte que no conviene automatizar a ciegas.
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: 'Etiqueta de origen, la que se quiere promocionar (por ejemplo sha-1a2b3c4)'
+        required: true
+        default: latest
+      target_tag:
+        description: 'Etiqueta de destino'
+        required: true
+        default: stable
+
+concurrency:
+  # Dos promociones a la vez sobre la misma etiqueta dejarian el resultado a suertes.
+  group: promote-${{ github.event.inputs.target_tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: Promote ${{ github.event.inputs.source_tag }} to ${{ github.event.inputs.target_tag }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Empujar la etiqueta nueva con el GITHUB_TOKEN, sin ningun secreto que mantener.
+      packages: write
+
+    steps:
+      - name: Reject a no-op promotion
+        # Promocionar una etiqueta sobre si misma no hace nada y deja en el historial una entrada
+        # que parece un despliegue.
+        run: |
+          if [ "${{ github.event.inputs.source_tag }}" = "${{ github.event.inputs.target_tag }}" ]; then
+            echo "Origen y destino son la misma etiqueta; no hay nada que promocionar."
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Retag the existing image
+        id: promote
+        # 'imagetools create' copia el manifiesto, no las capas: no descarga ni reconstruye la
+        # imagen, asi que lo que queda etiquetado es EXACTAMENTE el mismo digest que se probo.
+        # Reconstruir desde el mismo commit no daria esa garantia.
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          SOURCE="$IMAGE:${{ github.event.inputs.source_tag }}"
+          TARGET="$IMAGE:${{ github.event.inputs.target_tag }}"
+
+          docker buildx imagetools create --tag "$TARGET" "$SOURCE"
+
+          DIGEST=$(docker buildx imagetools inspect "$TARGET" --format '{{.Manifest.Digest}}')
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Write the summary
+        run: |
+          {
+            echo "### Imagen promocionada"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Origen | \`${{ github.event.inputs.source_tag }}\` |"
+            echo "| Destino | \`${{ github.event.inputs.target_tag }}\` |"
+            echo "| Digest | \`${{ steps.promote.outputs.digest }}\` |"
+            echo "| Promocionada por | @${{ github.actor }} |"
+            echo
+            echo "Desplegar con:"
+            echo
+            echo '```bash'
+            echo "docker pull ghcr.io/${{ github.repository }}@${{ steps.promote.outputs.digest }}"
+            echo '```'
+            echo
+            echo "Se usa el digest y no la etiqueta a proposito: la etiqueta se mueve, el digest no."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -275,9 +275,10 @@ gateway. Si el gateway exigiera la suya, rechazaría tokens que los servicios s�
 dejara pasar uno sin la audiencia del destino, el 401 llegaría **después** del gateway, que es el
 fallo más confuso posible.
 
-Por eso `KEYCLOAK_AUDIENCE_VALIDATION_ENABLED=false` de serie. Para activarla hay que **primero**
-tocar el realm: el *audience mapper* del cliente que pide el token tiene que emitir `mto-gateway-api`
-junto a `mto-configuration-api` y `mto-stock-api` en el mismo token. Después:
+Por eso `KEYCLOAK_AUDIENCE_VALIDATION_ENABLED=false` de serie. El requisito previo —que el
+*audience mapper* de `mto-frontend` emita `mto-gateway-api` junto a `mto-configuration-api` y
+`mto-stock-api` en el mismo token— **ya está puesto** en el realm de `mto-configuration`, así que
+activarla es solo cambiar dos variables:
 
 ```bash
 KEYCLOAK_AUDIENCE_VALIDATION_ENABLED=true KEYCLOAK_AUDIENCE=mto-gateway-api ./mvnw spring-boot:run
@@ -291,6 +292,41 @@ El `JwtDecoder` se construye con el **JWK Set** y no con el descubrimiento por e
 descubrimiento es una llamada HTTP bloqueante al crear el bean, así que el gateway no arrancaría si
 Keycloak todavía no está listo. Con el JWK Set la descarga es perezosa y un reinicio simultáneo de la
 plataforma deja de ser un fallo de arranque.
+
+### El cliente en Keycloak
+
+El gateway aporta su propio cliente al realm con `keycloak/mto-gateway-partial-import.json`, igual
+que hace `mto-stock` con el suyo. No va dentro del `mto-realm.json` de `mto-configuration`: ese
+fichero es el que **crea** el realm, y un compuesto que nombre un cliente que aún no existe aborta la
+importación entera. `RealmDefinitionsTest`, en `mto-configuration`, vigila justamente eso.
+
+| Qué | Dónde |
+|---|---|
+| Cliente `mto-gateway-api` y sus roles `ops-metrics` / `ops-write` | `keycloak/mto-gateway-partial-import.json`, en **este** repo |
+| `mto-ops` ampliado para cubrir también el gateway | `keycloak/mto-ops-cross-service.json`, en **`mto-configuration`** |
+| *Audience mapper* de `mto-frontend` hacia `mto-gateway-api` | `keycloak/mto-realm.json`, en **`mto-configuration`** |
+
+Se aplica como importación parcial, con el realm ya creado:
+
+```bash
+TOKEN=$(curl -s -d 'client_id=admin-cli' -d 'username=admin' -d "password=$KC_ADMIN_PASSWORD" \
+  -d 'grant_type=password' "$KC_URL/realms/master/protocol/openid-connect/token" | jq -r .access_token)
+
+# 1. El cliente del gateway y sus permisos
+curl -X POST "$KC_URL/admin/realms/mto/partialImport" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  --data-binary @keycloak/mto-gateway-partial-import.json
+
+# 2. Y DESPUES, desde mto-configuration, el perfil de operacion que ya cubre los tres
+curl -X POST "$KC_URL/admin/realms/mto/partialImport" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  --data-binary @../mto-configuration/keycloak/mto-ops-cross-service.json
+```
+
+El orden importa: el segundo fichero nombra `mto-gateway-api`, así que el cliente tiene que existir
+antes. Sin el paso 2, `/actuator/prometheus` del gateway queda cerrado incluso para quien tiene el
+perfil `mto-ops` — una importación parcial **reescribe el rol entero**, de modo que el fichero
+cross-service repite los permisos de los tres servicios y aplicarlo es lo que los junta.
 
 ---
 
@@ -409,22 +445,45 @@ plataforma no usa baggage en ningún sitio, así que hacerlo aquí sería invent
 - **`test`** — en cada `push`, `pull_request` y `workflow_dispatch`: `checkout` → JDK 25 (temurin,
   con caché de Maven) → `./mvnw -B --no-transfer-progress verify` → subida de los informes de
   Surefire. Es la misma forma que el `ci.yml` de `mto-configuration` y `mto-stock`.
-- **`publish`** — solo en `push` a `master` y solo si `test` ha pasado: construye la imagen con
-  Buildx y la publica en **GHCR** como `ghcr.io/<owner>/mto-gateway`, con las etiquetas `sha-<corto>`
-  y `latest`. Se autentica con el `GITHUB_TOKEN` del propio workflow (`permissions: packages: write`),
-  así que **no hay ningún secreto que dar de alta**.
+- **`image`** — construye la imagen con Buildx **siempre**, también en los *pull request*. Antes solo
+  se construía al entrar en `master`, de modo que un `Dockerfile` roto no se descubría hasta después
+  de fusionar, justo cuando ya no hay nadie mirando.
+  - En un PR la imagen no se publica: se carga en el demonio local del runner y se le pasa un
+    **smoke test** que la arranca sin ningún servicio detrás y espera a que `/actuator/health`
+    responda. Construir no prueba que el contenedor arranque; esto sí, y de paso comprueba que el
+    gateway levanta sin base de datos, sin Keycloak y sin destinos.
+  - En `push` a `master` se publica en **GHCR** como `ghcr.io/<owner>/mto-gateway`, con las
+    etiquetas `sha-<corto>` y `latest`. Se autentica con el `GITHUB_TOKEN` del propio workflow
+    (`permissions: packages: write`), así que **no hay ningún secreto que dar de alta**.
 
-No hay paso de despliegue: haría falta saber el destino (Kubernetes, una VM con `docker compose` por
-SSH, un servicio gestionado...) y qué credenciales existen. Para desplegar a mano:
+### Promocionar una imagen
+
+`.github/workflows/promote.yml` se lanza a mano (*Actions → Promote image → Run workflow*) y le pone
+una etiqueta estable a una imagen que ya existe:
+
+| Entrada | Por defecto | Qué es |
+|---|---|---|
+| `source_tag` | `latest` | La etiqueta que se quiere promocionar, normalmente un `sha-<corto>` concreto |
+| `target_tag` | `stable` | El nombre fijo al que apunta quien despliega |
+
+Usa `docker buildx imagetools create`, que **copia el manifiesto y no las capas**: no descarga ni
+reconstruye nada, así que lo que queda etiquetado es exactamente el mismo digest que se probó.
+Reconstruir desde el mismo commit no daría esa garantía. El resumen del workflow deja escrito el
+digest, quién promocionó y el `docker pull` listo para copiar.
+
+No hay paso de despliegue automático: no hay todavía un entorno al que desplegar. El día que lo
+haya, se engancha en ese workflow — el digest ya está resuelto y elegido a mano, que es justo la
+parte que no conviene automatizar a ciegas. Para desplegar mientras tanto:
 
 ```bash
-docker pull ghcr.io/<owner>/mto-gateway:latest
+# Por digest y no por etiqueta: la etiqueta se mueve, el digest no.
+docker pull ghcr.io/<owner>/mto-gateway@sha256:<digest>
 docker run -d --name mto-gateway -p 8090:8090 \
   -e MTO_CONFIGURATION_URL=http://mto-configuration-api:8080 \
   -e MTO_STOCK_URL=http://mto-stock-app:8080 \
   -e KEYCLOAK_ISSUER_URI=https://auth.example.com/realms/mto \
   -e APP_CORS_ALLOWED_ORIGINS=https://mto.example.com \
-  ghcr.io/<owner>/mto-gateway:latest
+  ghcr.io/<owner>/mto-gateway@sha256:<digest>
 ```
 
 La primera vez, el paquete de GHCR nace privado: hay que darle acceso al repositorio o hacerlo
@@ -449,6 +508,9 @@ src/main/java/com/alejandro/mtogateway/
 │   └── CorrelationIdProperties.java            app.correlation
 └── controller/
     └── FallbackController.java                 503 cuando el circuito está abierto
+
+keycloak/
+└── mto-gateway-partial-import.json             cliente mto-gateway-api y sus roles de operación
 
 src/main/resources/
 ├── application.yaml                            rutas, timeouts, seguridad, CORS, resiliencia

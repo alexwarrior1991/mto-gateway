@@ -43,17 +43,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  publish:
-    name: Publish image to GHCR
+  image:
+    name: Build image
     needs: test
-    # Solo desde master. Una rama de trabajo no debe publicar una imagen que alguien pueda
-    # desplegar por error, y un pull_request desde un fork no tendria permiso para hacerlo.
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-latest
 
     permissions:
       contents: read
-      # Lo que permite empujar a ghcr.io con el GITHUB_TOKEN, sin ningun secreto que mantener.
+      # Solo hace falta para publicar. En un pull_request desde un fork el token es de solo
+      # lectura de todas formas, por eso el login y el push van condicionados mas abajo.
       packages: write
 
     steps:
@@ -63,7 +61,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # La imagen se construye SIEMPRE, tambien en los pull request. Antes solo se construia al
+      # entrar en master, de modo que un Dockerfile roto no se descubria hasta despues de fusionar
+      # — justo cuando ya no hay nadie mirando. Lo que sigue condicionado es la publicacion.
       - name: Log in to GHCR
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -77,16 +79,41 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=sha,format=short
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          # Una rama de trabajo no debe publicar una imagen que alguien pueda desplegar por error.
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          # Sin publicar, la imagen se queda en el demonio local del runner: basta para saber que
+          # el Dockerfile construye y que el jar entra donde el ENTRYPOINT lo espera.
+          load: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # La cache de Actions evita repetir la descarga entera de dependencias de Maven en cada
           # push; el Dockerfile ya la aprovecha con su mount de /root/.m2.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Construir no prueba que el contenedor arranque. Esto lo comprueba de verdad: levanta la
+      # imagen recien construida sin ningun servicio detras y espera a que /actuator/health
+      # responda. El gateway tiene que arrancar sin base de datos, sin Keycloak y sin destinos.
+      - name: Smoke test the image
+        if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
+        run: |
+          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
+          docker run -d --name mto-gateway-smoke -p 8090:8090 "$IMAGE"
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8090/actuator/health > /dev/null; then
+              echo "El contenedor responde en /actuator/health"
+              docker rm -f mto-gateway-smoke
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "La imagen no respondio en 60s. Log del contenedor:"
+          docker logs mto-gateway-smoke
+          docker rm -f mto-gateway-smoke
+          exit 1
