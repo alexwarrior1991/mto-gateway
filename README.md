@@ -109,8 +109,10 @@ timeouts son globales y no saben qué rutas existen.
    `.env.example` y a la tabla de este README, y añade un caso a `GatewayRoutingIntegrationTest`.
 
 Las sondas de salud del servicio nuevo quedan abiertas sin tocar nada: la regla de seguridad usa el
-comodín `/api/*/actuator/health`. El nombre legible en el cuerpo de un 503 sí se declara en
-`FallbackController.SERVICE_NAMES`; sin él sale el segmento de la URL, que tampoco está mal.
+comodín `/api/*/actuator/health`. Lo que sí se declara en `FallbackController.SERVICES` es su nombre
+legible y el id de su circuito, que es de donde sale el `Retry-After` del 503; un servicio que no
+esté en ese mapa tampoco rompe nada — se usa el segmento de la URL como nombre y la configuración por
+defecto del registro para la espera.
 
 ---
 
@@ -135,6 +137,9 @@ partir de una base.
 | `APP_CORS_ALLOWED_ORIGINS` | `http://localhost:4200,http://localhost:5173` | Lista separada por comas, sin comodines |
 | `SERVER_FORWARD_HEADERS_STRATEGY` | `none` | `framework` solo detrás de un ingress de confianza |
 | `MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE` | `health,info,prometheus` | Endpoints de Actuator publicados |
+| `MTO_TRACING_ENABLED` | `true` | Trazado distribuido |
+| `MTO_TRACING_SAMPLING_PROBABILITY` | `0.1` | Fracción de trazas muestreadas |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `http://localhost:4318/v1/traces` | Colector OTLP |
 | `SPRING_THREADS_VIRTUAL_ENABLED` | `true` | Hilos virtuales para el proxy bloqueante |
 
 > **Aviso sobre puertos.** En local, `mto-stock` escucha en el **8080**, `mto-configuration` en el
@@ -296,8 +301,11 @@ así que lo que aplica es el CORS de Spring Web de siempre, mediante un `CorsCon
 recoge `http.cors(...)`. La política se configura en `app.security.cors`, con el mismo esquema que en
 los otros dos repositorios.
 
-`X-Correlation-Id` va en `exposed-headers` a propósito: sin exponerla, el navegador ve llegar la
-cabecera y no deja leerla desde JavaScript, justo a quien tiene que pegarla en un informe de error.
+La cabecera de correlación **no se enumera** en `allowed-headers` ni en `exposed-headers`: la añade
+`SecurityConfiguration` leyendo `app.correlation.header-name`, de modo que su nombre vive en un solo
+sitio. El gateway *pone* esa cabecera en cada respuesta, así que tiene que aceptarla y exponerla sea
+cual sea su nombre — y sin exponerla, el navegador la ve llegar y no deja leerla desde JavaScript,
+justo a quien tiene que pegarla en un informe de error.
 
 `allowed-origins` **no admite el comodín** y la aplicación no arranca si se pone: con
 `allow-credentials` activo Spring lo rechaza en tiempo de ejecución, de modo que un `"*"` puesto para
@@ -317,6 +325,9 @@ consola del navegador, lejos de quien escribió la configuración.
   dice qué servicio concreto no está disponible, en vez de un 500 con la traza del proxy dentro.
   Las rutas de Actuator **no** llevan circuit breaker: son la sonda con la que se comprueba si el
   servicio está vivo, y taparla con un fallback es quedarse sin la única respuesta útil.
+- El `Retry-After` de ese 503 **se lee de la configuración real del circuito**
+  (`wait-duration-in-open-state`), no va escrito en el código: es el tiempo que va a tardar en dejar
+  pasar la primera llamada de prueba, así que reintentar antes solo suma peticiones rechazadas.
 - `GATEWAY_CIRCUIT_BREAKER_TIMEOUT` es mayor que el `read-timeout` a propósito: así gana el timeout
   HTTP y el error que se registra es el real del servicio, no una cancelación genérica. **Ojo:** el
   valor por defecto del `TimeLimiter` de Spring Cloud CircuitBreaker es de **1 segundo**, y sin
@@ -328,6 +339,50 @@ consola del navegador, lejos de quien escribió la configuración.
 > cliente consulta el estado. Si algún día se publica un endpoint de streaming, la solución no es
 > subir el timeout global —eso costaría el fallo rápido en todas las llamadas normales—, sino darle
 > su propia ruta con su cliente.
+
+---
+
+## Trazado distribuido
+
+El gateway exporta trazas a un colector **OTLP** con el mismo montaje que `mto-configuration`
+(`spring-boot-starter-opentelemetry`, que en Boot 4 sustituye al par
+`micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp`).
+
+Aquí importa más que en ningún otro servicio: **el gateway es el borde, o sea el único sitio donde
+una traza debería empezar.** Sin esto, cada servicio abría su propia traza y no había forma de ver
+una petición de punta a punta.
+
+Qué hace en concreto:
+
+- Si la petición **no** trae `traceparent`, el gateway abre la traza y lo inyecta hacia el servicio
+  de destino.
+- Si **sí** lo trae, la continúa: mismo `trace-id`, `span-id` nuevo para el salto por el gateway.
+- La cabecera sale **una sola vez**. No es una obviedad: el proxy copia todas las cabeceras
+  entrantes y además la instrumentación del `RestClient` inyecta la suya, así que un `traceparent`
+  duplicado —que dejaría al servicio de destino eligiendo cuál respeta— era un desenlace posible.
+  Lo fija `GatewayTracingIntegrationTest`.
+- Cada línea de log lleva los tres identificadores:
+  `[mto-gateway,<traceId>,<spanId>,<correlationId>]`.
+
+Dos cosas que conviene saber:
+
+> **El muestreo bajo no rompe la cadena.** Con `MTO_TRACING_SAMPLING_PROBABILITY=0.1` solo se
+> registra el 10% de las trazas, pero un span **no** muestreado sigue propagando su `traceparent`
+> con el flag `00`, así que la correlación entre servicios se mantiene. Muestrear el 100% en un
+> servicio con tráfico real es caro y casi nunca hace falta.
+
+> **`mto-stock` todavía no tiene trazado.** Hoy la traza llega a su borde y ahí se corta: `mto-stock`
+> no lleva ninguna dependencia de tracing. Añadírselo es el siguiente paso natural de la plataforma,
+> y es una tarde de trabajo: el mismo starter y el mismo bloque de configuración que hay aquí.
+
+Las métricas OTLP van **apagadas** (`management.otlp.metrics.export.enabled: false`): el starter
+arrastra también un registro OTLP de métricas y, sin eso, el gateway las empujaría a un colector
+*además* de exponerlas en `/actuator/prometheus`. Misma decisión que en `mto-configuration`.
+
+El `X-Correlation-Id` **no** se sustituye por la traza y las dos identidades conviven: el de
+correlación es legible, lo puede teclear una persona en una incidencia, y sobrevive a que el trazado
+esté apagado o a que el span no se muestree. Tampoco se propaga como *baggage* de OpenTelemetry —la
+plataforma no usa baggage en ningún sitio, así que hacerlo aquí sería inventar comportamiento nuevo.
 
 ---
 
@@ -404,5 +459,7 @@ src/test/java/com/alejandro/mtogateway/
 ├── MtoGatewayApplicationTests.java             arranque sin base de datos, rutas enlazadas
 ├── CorrelationIdFilterTest.java                el filtro, sin contexto de Spring
 ├── GatewayRoutingIntegrationTest.java          enrutado, correlación, seguridad y CORS de verdad
+├── GatewayTracingIntegrationTest.java          la traza nace y se propaga una sola vez
+├── GatewayCorsHeaderNameTest.java              CORS sigue a app.correlation.header-name
 └── GatewayFallbackIntegrationTest.java         qué ve el cliente con el servicio caído
 ```

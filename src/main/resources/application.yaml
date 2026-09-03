@@ -166,6 +166,27 @@ management:
       show-details: when-authorized
       show-components: when-authorized
       roles: OPS_METRICS
+  # Trazabilidad distribuida. El gateway es el borde: aqui es donde nace la traza que despues
+  # continua en mto-configuration. Ojo, mto-stock todavia NO tiene trazado, asi que hoy la cadena
+  # termina en su borde; ver README.md.
+  tracing:
+    enabled: ${MTO_TRACING_ENABLED:true}
+    sampling:
+      # Muestrear el 100% en un servicio con trafico real es caro y casi nunca hace falta. Ojo: un
+      # span NO muestreado sigue propagando su traceparent (con el flag a 00), asi que la cadena
+      # entre servicios no se rompe por muestrear poco.
+      probability: ${MTO_TRACING_SAMPLING_PROBABILITY:0.1}
+
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+    metrics:
+      export:
+        # Las metricas salen por Prometheus (ver /actuator/prometheus). El starter de OpenTelemetry
+        # arrastra tambien un registro OTLP de metricas, y sin esto intentaria empujarlas a un
+        # colector ademas de exponerlas. Misma decision que en mto-configuration.
+        enabled: false
+
   health:
     probes:
       enabled: true
@@ -180,9 +201,14 @@ management:
 
 logging:
   pattern:
-    # El identificador de correlacion en cada linea. Es lo que permite seguir una peticion desde el
-    # gateway hasta mto-stock y volver.
-    level: "%5p [${spring.application.name},%X{correlationId:-}]"
+    # Los tres identificadores en cada linea: los dos de la traza y el de correlacion.
+    #
+    # Va en 'correlation' y NO en 'pattern.level', que es donde estaba antes. 'pattern.level' es la
+    # ranura que la autoconfiguracion de trazado quiere para traceId/spanId: ocupandola, el starter
+    # de OpenTelemetry entra pero sus identificadores no aparecen en ninguna linea de log. Esta
+    # ranura es la que corresponde, y sigue funcionando con el trazado apagado (los campos ausentes
+    # se renderizan vacios).
+    correlation: "[${spring.application.name:},%X{traceId:-},%X{spanId:-},%X{correlationId:-}] "
 
 # Configuracion propia de la aplicacion
 app:
@@ -216,11 +242,13 @@ app:
       # en vez de aflojar la politica.
       allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:4200,http://localhost:5173}
       allowed-methods: GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS
-      allowed-headers: Authorization,Content-Type,Accept,X-Correlation-Id,X-Requested-With
-      # El navegador solo deja leer al JavaScript las cabeceras que se expongan aqui. Sin
-      # X-Correlation-Id, un frontal no puede ensenar el identificador con el que abrir una
-      # incidencia.
-      exposed-headers: X-Correlation-Id,Location,Content-Disposition
+      # La cabecera de correlacion NO se enumera en estas dos listas: la anade
+      # SecurityConfiguration leyendo app.correlation.header-name, de modo que el nombre vive en un
+      # solo sitio. Antes estaba escrito aqui a mano y cambiar la property dejaba al navegador sin
+      # poder leerla, sin que nada avisara.
+      allowed-headers: Authorization,Content-Type,Accept,X-Requested-With
+      # El navegador solo deja leer al JavaScript las cabeceras que se expongan aqui.
+      exposed-headers: Location,Content-Disposition
       # La API es stateless y se autentica con la cabecera Authorization: no hay cookies que enviar
       # y activarlo solo ampliaria la superficie.
       allow-credentials: false

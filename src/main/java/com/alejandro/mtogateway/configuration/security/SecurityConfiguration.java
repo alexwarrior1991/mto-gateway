@@ -24,6 +24,9 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * El gateway es el <b>borde de autenticación</b>: comprueba que el token está firmado por el realm,
  * que lo emitió quien dice y que sigue vigente, y rechaza el tráfico anónimo antes de gastar una
@@ -132,22 +135,52 @@ public class SecurityConfiguration {
      * Spring MVC, así que lo que aplica es el CORS de Spring Web de siempre. Este bean lo recoge
      * {@code http.cors(...)} de arriba, de modo que hay un único sitio donde está escrita la
      * política.
+     *
+     * <p>La cabecera de correlación se añade aquí a las dos listas en lugar de enumerarse en el
+     * YAML. El gateway <em>pone</em> esa cabecera en cada respuesta, así que tiene que aceptarla y
+     * exponerla sea cual sea su nombre: es una invariante del código y no algo que se pueda borrar
+     * de un fichero de configuración sin que nada se queje. Antes estaba escrita a mano en el YAML
+     * y cambiar {@code app.correlation.header-name} dejaba al navegador sin poder leerla — sin
+     * exponerla, el identificador es inútil justo para quien tiene que pegarlo en un informe de
+     * error.</p>
      */
     @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
+    public CorsConfigurationSource corsConfigurationSource(CorrelationIdProperties correlationProperties) {
         SecurityProperties.Cors corsProperties = securityProperties.cors();
+        String correlationHeader = correlationProperties.headerName();
 
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(corsProperties.allowedOrigins());
         configuration.setAllowedMethods(corsProperties.allowedMethods());
-        configuration.setAllowedHeaders(corsProperties.allowedHeaders());
-        configuration.setExposedHeaders(corsProperties.exposedHeaders());
+        configuration.setAllowedHeaders(withHeader(corsProperties.allowedHeaders(), correlationHeader));
+        configuration.setExposedHeaders(withHeader(corsProperties.exposedHeaders(), correlationHeader));
         configuration.setAllowCredentials(corsProperties.allowCredentials());
         configuration.setMaxAge(corsProperties.maxAge());
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
+    }
+
+    /**
+     * Añade la cabecera a la lista si no está ya, comparando sin distinguir mayúsculas porque los
+     * nombres de cabecera no las distinguen y {@code x-correlation-id} escrito en el YAML no debe
+     * producir una entrada duplicada.
+     *
+     * <p>Con el comodín no se toca nada: {@code "*"} ya lo cubre todo, y añadir un nombre concreto
+     * al lado convertiría la lista en una enumeración parcial que no es lo que se pidió.</p>
+     */
+    private static List<String> withHeader(List<String> configured, String header) {
+        List<String> headers = (configured != null) ? configured : List.of();
+
+        if (headers.contains(CorsConfiguration.ALL)
+                || headers.stream().anyMatch(header::equalsIgnoreCase)) {
+            return headers;
+        }
+
+        List<String> merged = new ArrayList<>(headers);
+        merged.add(header);
+        return merged;
     }
 
     /**

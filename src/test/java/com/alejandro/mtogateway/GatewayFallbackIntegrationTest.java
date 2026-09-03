@@ -31,7 +31,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code CircuitBreaker} y su fallback, esto sería un 500 con la traza del proxy dentro, y el
  * cliente no podría distinguir «he pedido algo mal» de «mto-stock está caído».</p>
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        // 45s y no los 30s de produccion a proposito: el Retry-After se lee de la configuracion
+        // real del circuito, asi que con un valor distinto del de application.yaml el test no puede
+        // pasar por casualidad si alguien vuelve a escribir la cifra a mano.
+        properties = "resilience4j.circuitbreaker.configs.default.wait-duration-in-open-state=45s")
 class GatewayFallbackIntegrationTest {
 
     private static final HttpClient CLIENT = HttpClient.newBuilder()
@@ -77,8 +82,9 @@ class GatewayFallbackIntegrationTest {
         HttpResponse<String> response = call("/api/stock/materials");
 
         assertEquals(503, response.statusCode());
-        assertEquals("30", response.headers().firstValue("Retry-After").orElse(null),
-                "Reintentar antes de que el circuito se plantee cerrarse solo suma peticiones rechazadas");
+        assertEquals("45", response.headers().firstValue("Retry-After").orElse(null),
+                "Derivado de wait-duration-in-open-state, no escrito a mano: reintentar antes de que "
+                        + "el circuito se plantee cerrarse solo suma peticiones rechazadas");
     }
 
     @Test
