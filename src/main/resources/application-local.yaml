@@ -1,0 +1,19 @@
+# Perfil de desarrollo en la maquina del desarrollador.
+#
+# La seguridad NO se apaga aqui: la cadena de filtros es la misma que en produccion y hace falta un
+# token del realm para llamar a /api/**. Lo que si responde sin token son /actuator/health,
+# /actuator/info y los mismos endpoints de los servicios a traves del gateway, que es justo lo que
+# hace falta para comprobar que el enrutado esta bien. Ver README.md, "Arranque en local".
+logging:
+  level:
+    # Publica la tabla de rutas al arrancar y el detalle de que ruta encaja con cada peticion. Es lo
+    # primero que hay que mirar cuando algo devuelve 404 y no se sabe si el 404 es del gateway o del
+    # servicio de destino.
+    org.springframework.cloud.gateway: DEBUG
+    # Cada peticion proxy con su URI ya reescrita.
+    org.springframework.cloud.gateway.server.mvc.handler: TRACE
+
+app:
+  security:
+    cors:
+      allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:4200,http://localhost:5173,http://localhost:3000}

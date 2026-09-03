@@ -1,9 +1,45 @@
+# Solo el gateway. La base de datos, RabbitMQ, Redis y Keycloak los levantan los stacks de
+# mto-configuration y de mto-stock: el gateway no persiste nada y no tiene infraestructura propia.
+#
+# Por defecto apunta a los servicios publicados en el host (8081 y 8080), que es como se arrancan
+# esos dos stacks. Para meterlo en la red de uno de ellos, descomentar el bloque 'networks' y usar
+# nombres de servicio en las URLs.
 services:
-  postgres:
-    image: 'postgres:latest'
-    environment:
-      - 'POSTGRES_DB=mydatabase'
-      - 'POSTGRES_PASSWORD=secret'
-      - 'POSTGRES_USER=myuser'
+  gateway:
+    build:
+      context: .
+    image: mto-gateway:${APP_IMAGE_TAG:-latest}
+    container_name: mto-gateway
     ports:
-      - '5432'
+      - '${APP_PORT:-8090}:${SERVER_PORT:-8090}'
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-docker}
+      SERVER_PORT: ${SERVER_PORT:-8090}
+      MTO_CONFIGURATION_URL: ${MTO_CONFIGURATION_URL:-http://host.docker.internal:8081}
+      MTO_STOCK_URL: ${MTO_STOCK_URL:-http://host.docker.internal:8080}
+      KEYCLOAK_ISSUER_URI: ${KEYCLOAK_ISSUER_URI:-http://auth.mto.local:8082/realms/mto}
+      # El colector vive en el stack de mto-configuration y se alcanza por el host, igual que
+      # Keycloak. El gateway es donde NACE la traza, asi que si esta URL no apunta al mismo
+      # sitio que la de los otros dos, no hay traza distribuida que valga.
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-http://otel.mto.local:4318/v1/traces}
+      APP_CORS_ALLOWED_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS:-http://localhost:4200}
+      JAVA_OPTS: ${JAVA_OPTS:-}
+    # En Linux 'host.docker.internal' no existe salvo que se declare; en Docker Desktop ya viene.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+      # El realm se emite con este nombre, asi que el gateway tiene que resolverlo igual que lo
+      # resuelven mto-configuration y mto-stock.
+      - 'auth.mto.local:host-gateway'
+      - 'otel.mto.local:host-gateway'
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:${SERVER_PORT:-8090}/actuator/health']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+
+# networks:
+#   default:
+#     name: mto-stock-network
+#     external: true

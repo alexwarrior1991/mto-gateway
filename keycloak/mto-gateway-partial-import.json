@@ -1,0 +1,29 @@
+{
+  "roles": {
+    "client": {
+      "mto-gateway-api": [
+        {
+          "name": "ops-metrics",
+          "description": "Lectura de los endpoints de Actuator del gateway, metricas de Prometheus incluidas"
+        },
+        {
+          "name": "ops-write",
+          "description": "Operaciones de Actuator del gateway que modifican estado, como cambiar un nivel de log en caliente"
+        }
+      ]
+    }
+  },
+  "clients": [
+    {
+      "clientId": "mto-gateway-api",
+      "name": "API Gateway MTO",
+      "description": "Resource server. No inicia ningun flujo: existe para declarar los permisos de operacion del gateway como roles de cliente y para poder ser la audiencia de los tokens si algun dia se activa la validacion de audiencia en el borde.",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    }
+  ]
+}

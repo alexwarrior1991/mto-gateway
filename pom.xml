@@ -33,10 +33,6 @@
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-restclient</artifactId>
         </dependency>
         <dependency>
@@ -52,17 +48,53 @@
             <artifactId>spring-cloud-starter-gateway-server-webmvc</artifactId>
         </dependency>
 
+        <!-- Health e info para el balanceador y para los propios criterios de aceptacion, y
+             prometheus para igualar lo que ya exponen mto-configuration y mto-stock. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-docker-compose</artifactId>
-            <scope>runtime</scope>
-            <optional>true</optional>
+            <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
             <scope>runtime</scope>
         </dependency>
+
+        <!-- Trazabilidad distribuida (micrometer-tracing-bridge-otel + exportador OTLP). Es el
+             mismo artefacto que usa mto-configuration: se declara el starter y no las librerias
+             sueltas porque la autoconfiguracion de Boot vive en modulos aparte
+             (spring-boot-micrometer-tracing-opentelemetry y spring-boot-opentelemetry) y sin ellos
+             no habria ni Tracer ni Propagator.
+
+             En el gateway importa mas que en ningun otro servicio: es el borde, o sea el unico
+             sitio donde una traza deberia EMPEZAR. Sin esto, cada servicio abria su propia traza y
+             no habia forma de ver una peticion de punta a punta. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
+
+        <!-- El gateway es el borde de autenticacion: valida firma, emisor y vigencia del JWT de
+             Keycloak y rechaza el trafico anonimo antes de gastar una conexion aguas abajo. La
+             autorizacion fina por rol sigue en cada servicio. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-oauth2-resource-server</artifactId>
+        </dependency>
+
+        <!-- Habilita el filtro CircuitBreaker del gateway: su autoconfiguracion
+             (FilterAutoConfiguration$CircuitBreakerFilterConfiguration) es condicional a que haya
+             un CircuitBreakerFactory en el classpath. Sin el, un servicio caido consume hilos del
+             gateway hasta agotar el read-timeout en cada peticion. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
@@ -70,7 +102,27 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa-test</artifactId>
+            <artifactId>spring-boot-starter-actuator-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- No se usa @AutoConfigureTracing: su customizer solo apaga 'spring.test.tracing.export',
+             es decir el exportador, no el trazado. En los tests eso es exactamente lo que se
+             quiere —los spans se crean y el traceparent se propaga, pero nada se manda a un
+             colector que no existe—, asi que las pruebas de propagacion funcionan sin la
+             anotacion. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-oauth2-resource-server-test</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

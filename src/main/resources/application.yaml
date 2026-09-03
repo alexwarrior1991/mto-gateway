@@ -1,3 +1,261 @@
 spring:
   application:
     name: mto-gateway
+
+  # El gateway es un proxy bloqueante (sabor servlet de Spring Cloud Gateway, no reactivo): cada
+  # peticion en vuelo ocupa un hilo mientras espera al servicio de destino. Con hilos de plataforma
+  # el limite de concurrencia seria el tamano del pool de Tomcat (200 por defecto), y un servicio
+  # lento bastaria para agotarlo y dejar sin atender tambien al que funciona. Con hilos virtuales el
+  # coste de esperar deja de ser un hilo del sistema operativo.
+  threads:
+    virtual:
+      enabled: ${SPRING_THREADS_VIRTUAL_ENABLED:true}
+
+  # Timeouts del cliente HTTP que usa el gateway para hablar con los servicios. Son las claves en
+  # plural de Boot 4.1; las 'spring.http.client.*' en singular estan deprecadas.
+  #
+  # Un read-timeout global corta tambien respuestas largas (SSE, descargas grandes). Los trabajos
+  # asincronos de mto-configuration devuelven 202 al momento y no se ven afectados, pero conviene
+  # revisar este valor antes de publicar por aqui cualquier endpoint de streaming.
+  http:
+    clients:
+      connect-timeout: ${GATEWAY_CONNECT_TIMEOUT:2s}
+      read-timeout: ${GATEWAY_READ_TIMEOUT:15s}
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Mismo realm que mto-configuration y mto-stock: el token que acepta el gateway es el
+          # mismo que aceptan ellos, y viaja intacto aguas abajo.
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://auth.mto.local:8082/realms/mto}
+
+  cloud:
+    gateway:
+      server:
+        webmvc:
+          # El orden de esta lista es el orden de evaluacion. Para cada servicio van DOS rutas y la
+          # de Actuator tiene que ir primero: si no, /api/configuration/actuator/health caeria en el
+          # comodin de la API y se reescribiria a /api/v1/configuration/actuator/health -> 404.
+          #
+          # Se usa RewritePath y no StripPrefix porque el prefijo publico y el interno no coinciden
+          # (/api/stock -> /api/v1/inventory). StripPrefix solo QUITA segmentos de cabecera; no
+          # puede anadir el prefijo interno. RewritePath hace las dos cosas y deja el mapeo a la
+          # vista.
+          #
+          # El '$\{segment}' lleva la barra invertida a proposito: sin ella, el resolutor de
+          # placeholders de Spring intentaria resolver ${segment} como una property al arrancar. El
+          # propio filtro deshace el escape antes de aplicar el reemplazo.
+          #
+          # El grupo se pega al prefijo, sin '/' delante -'/api/stock(?<segment>.*)' y no
+          # '/api/stock/(?<segment>.*)'-, para que la barra separadora viaje dentro del grupo. Asi
+          # '/api/stock' a secas se reescribe a '/api/v1/inventory' y no a '/api/v1/inventory/'.
+          # La 'uri' apunta a app.services.*.url en vez de repetir aqui la variable de entorno: asi
+          # un perfil (docker, por ejemplo) cambia el destino tocando una sola clave y no hay que
+          # duplicar la tabla de rutas entera.
+          routes:
+            # --- Actuator de cada servicio, con el 'order' mas bajo -------------------------
+            # No llevan CircuitBreaker: son la sonda con la que se comprueba si el servicio esta
+            # vivo, y taparla con un fallback es quedarse sin la unica respuesta util.
+            - id: mto-configuration-actuator
+              uri: ${app.services.configuration.url}
+              order: 0
+              predicates:
+                - Path=/api/configuration/actuator/**
+              filters:
+                - RewritePath=/api/configuration/actuator(?<segment>.*), /actuator$\{segment}
+
+            - id: mto-stock-actuator
+              uri: ${app.services.stock.url}
+              order: 1
+              predicates:
+                - Path=/api/stock/actuator/**
+              filters:
+                - RewritePath=/api/stock/actuator(?<segment>.*), /actuator$\{segment}
+
+            # --- API de cada servicio ------------------------------------------------------
+            # El prefijo publico no lleva version a proposito: '/api/configuration' es el contrato
+            # con el cliente y '/api/v1/configuration' es un detalle interno del servicio. El dia
+            # que salga una v2, el cambio es esta linea y no una migracion de todos los clientes.
+            - id: mto-configuration-api
+              uri: ${app.services.configuration.url}
+              order: 10
+              predicates:
+                - Path=/api/configuration/**
+              filters:
+                - RewritePath=/api/configuration(?<segment>.*), /api/v1/configuration$\{segment}
+                # Forma extendida y no la abreviada 'CircuitBreaker=name=...,fallbackUri=...': esa
+                # se interpreta por POSICION, de modo que el identificador del circuito acababa
+                # siendo la cadena literal 'name=mtoConfiguration' y el fallback se perdia sin que
+                # nada fallara al arrancar. El sintoma era un 500 con la traza del proxy en lugar
+                # del 503.
+                - name: CircuitBreaker
+                  args:
+                    id: mtoConfiguration
+                    fallbackUri: forward:/fallback/configuration
+
+            # 'stock' de puertas afuera, 'inventory' de puertas adentro: dos nombres para lo mismo,
+            # que es justo la clase de arruga que un gateway existe para tapar.
+            - id: mto-stock-api
+              uri: ${app.services.stock.url}
+              order: 11
+              predicates:
+                - Path=/api/stock/**
+              filters:
+                - RewritePath=/api/stock(?<segment>.*), /api/v1/inventory$\{segment}
+                - name: CircuitBreaker
+                  args:
+                    id: mtoStock
+                    fallbackUri: forward:/fallback/stock
+
+server:
+  # 8090 y no 8080: en local el 8080 lo ocupa mto-stock, el 8081 mto-configuration y el 8082
+  # Keycloak.
+  port: ${SERVER_PORT:8090}
+  # Una peticion en vuelo son dos saltos: se le da margen para terminar antes de cerrar el contexto.
+  shutdown: graceful
+  # 'none' a proposito. Creerse las X-Forwarded-* de cualquiera permite falsificar el esquema y el
+  # host que el gateway usa para construir redirects. Ponerlo en 'framework' SOLO cuando delante hay
+  # un ingress o un balanceador de confianza que las reescribe.
+  forward-headers-strategy: ${SERVER_FORWARD_HEADERS_STRATEGY:none}
+  # Sin esto, un fallo del gateway devuelve al cliente la ruta interna y la traza. El detalle util
+  # queda en el log, que es donde se puede correlacionar con el X-Correlation-Id.
+  error:
+    include-message: never
+    include-stacktrace: never
+
+# Aislamiento de fallos. Un servicio caido no puede convertirse en una cola de peticiones colgadas
+# en el gateway: pasados los umbrales el circuito abre y las llamadas van directas al fallback.
+resilience4j:
+  timelimiter:
+    configs:
+      default:
+        # A proposito MAYOR que spring.http.clients.read-timeout: asi gana el timeout HTTP, el
+        # error que se registra es el real del servicio y no una cancelacion generica. Este queda
+        # como red de seguridad. Ojo: el valor por defecto de Spring Cloud CircuitBreaker es 1s, y
+        # sin sobreescribirlo cualquier consulta que pase de un segundo acabaria en el fallback.
+        timeout-duration: ${GATEWAY_CIRCUIT_BREAKER_TIMEOUT:20s}
+        cancel-running-future: true
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        # Con menos llamadas que esto no se calcula el ratio: evita abrir el circuito por los dos
+        # primeros errores tras un despliegue.
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: ${GATEWAY_READ_TIMEOUT:15s}
+        slow-call-rate-threshold: 100
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 5
+        automatic-transition-from-open-to-half-open-enabled: true
+    instances:
+      mtoConfiguration:
+        base-config: default
+      mtoStock:
+        base-config: default
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info,prometheus}
+  endpoint:
+    health:
+      show-details: when-authorized
+      show-components: when-authorized
+      roles: OPS_METRICS
+  # Trazabilidad distribuida. El gateway es el borde: aqui es donde nace la traza que despues
+  # continua en mto-configuration. Ojo, mto-stock todavia NO tiene trazado, asi que hoy la cadena
+  # termina en su borde; ver README.md.
+  tracing:
+    enabled: ${MTO_TRACING_ENABLED:true}
+    sampling:
+      # Muestrear el 100% en un servicio con trafico real es caro y casi nunca hace falta. Ojo: un
+      # span NO muestreado sigue propagando su traceparent (con el flag a 00), asi que la cadena
+      # entre servicios no se rompe por muestrear poco.
+      probability: ${MTO_TRACING_SAMPLING_PROBABILITY:0.1}
+
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+    metrics:
+      export:
+        # Las metricas salen por Prometheus (ver /actuator/prometheus). El starter de OpenTelemetry
+        # arrastra tambien un registro OTLP de metricas, y sin esto intentaria empujarlas a un
+        # colector ademas de exponerlas. Misma decision que en mto-configuration.
+        enabled: false
+
+  health:
+    probes:
+      enabled: true
+    # El estado de los circuitos entra en /actuator/health como componente informativo, pero no
+    # decide el health global: un circuito abierto significa que mto-stock esta mal, no el gateway,
+    # y no debe sacarlo del balanceador.
+    circuitbreakers:
+      enabled: true
+  info:
+    env:
+      enabled: false
+
+logging:
+  pattern:
+    # Los tres identificadores en cada linea: los dos de la traza y el de correlacion.
+    #
+    # Va en 'correlation' y NO en 'pattern.level', que es donde estaba antes. 'pattern.level' es la
+    # ranura que la autoconfiguracion de trazado quiere para traceId/spanId: ocupandola, el starter
+    # de OpenTelemetry entra pero sus identificadores no aparecen en ninguna linea de log. Esta
+    # ranura es la que corresponde, y sigue funcionando con el trazado apagado (los campos ausentes
+    # se renderizan vacios).
+    correlation: "[${spring.application.name:},%X{traceId:-},%X{spanId:-},%X{correlationId:-}] "
+
+# Configuracion propia de la aplicacion
+app:
+  # Destino de cada servicio ferroviario. Anadir uno nuevo son estas dos lineas mas su par de rutas
+  # arriba; no hay nada que tocar en Java.
+  services:
+    configuration:
+      url: ${MTO_CONFIGURATION_URL:http://localhost:8081}
+    stock:
+      # 8080 y no 8082: en el 8082 esta Keycloak. Un gateway que apuntase ahi arrancaria sin
+      # quejarse y devolveria 404 del proveedor de identidad, que se parecen mucho a un fallo de
+      # enrutado. mto-stock escucha en el 8080 del host. Ver README.md.
+      url: ${MTO_STOCK_URL:http://localhost:8080}
+
+  security:
+    # Cliente de este servicio en el realm. Lo usa el conversor para leer los roles de
+    # resource_access.<client-id>.roles.
+    client-id: ${KEYCLOAK_CLIENT_ID:mto-gateway-api}
+    # Claim que se usa como nombre del principal.
+    principal-claim: preferred_username
+    # Desactivada a proposito en el gateway, no por descuido. La audiencia es POR SERVICIO
+    # (mto-configuration-api, mto-stock-api) y cada uno valida la suya; exigir una aqui obligaria a
+    # crear y mapear una audiencia mto-gateway-api en el realm para todos los clientes. Lo que el
+    # gateway comprueba es firma, emisor y vigencia. Si se crea esa audiencia, basta poner las dos
+    # variables de abajo.
+    audience-validation-enabled: ${KEYCLOAK_AUDIENCE_VALIDATION_ENABLED:false}
+    required-audience: ${KEYCLOAK_AUDIENCE:}
+    cors:
+      # Sin comodin: la lista se enumera por entorno. Con allow-credentials activo Spring ademas
+      # rechaza '*' en tiempo de ejecucion, asi que ponerlo para salir del paso rompe cada preflight
+      # en vez de aflojar la politica.
+      allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:4200,http://localhost:5173}
+      allowed-methods: GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS
+      # La cabecera de correlacion NO se enumera en estas dos listas: la anade
+      # SecurityConfiguration leyendo app.correlation.header-name, de modo que el nombre vive en un
+      # solo sitio. Antes estaba escrito aqui a mano y cambiar la property dejaba al navegador sin
+      # poder leerla, sin que nada avisara.
+      allowed-headers: Authorization,Content-Type,Accept,X-Requested-With
+      # El navegador solo deja leer al JavaScript las cabeceras que se expongan aqui.
+      exposed-headers: Location,Content-Disposition
+      # La API es stateless y se autentica con la cabecera Authorization: no hay cookies que enviar
+      # y activarlo solo ampliaria la superficie.
+      allow-credentials: false
+      max-age: 3600
+
+  correlation:
+    header-name: X-Correlation-Id
+    # Un valor que llega de fuera acaba escrito en los logs de tres servicios. Se acota la longitud
+    # y el juego de caracteres para que no pueda inyectar saltos de linea ni cabeceras.
+    max-length: 64
