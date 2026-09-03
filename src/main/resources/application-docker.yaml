@@ -1,0 +1,14 @@
+# Perfil para cuando el gateway corre dentro de la red de Docker: los servicios se resuelven por
+# nombre de contenedor y en su puerto interno (8080 los dos), no por los puertos publicados en el
+# host.
+#
+# Solo cambian los destinos. La tabla de rutas no se repite aquí a propósito: las rutas apuntan a
+# 'app.services.*.url', de modo que un perfil cambia el destino con dos líneas. Duplicar la lista
+# tampoco funcionaría, porque una lista de YAML en un perfil no se fusiona elemento a elemento con
+# la del fichero base: la sustituye entera.
+app:
+  services:
+    configuration:
+      url: ${MTO_CONFIGURATION_URL:http://mto-configuration-api:8080}
+    stock:
+      url: ${MTO_STOCK_URL:http://mto-stock-app:8080}
