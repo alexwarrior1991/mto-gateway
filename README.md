@@ -407,9 +407,39 @@ Dos cosas que conviene saber:
 > con el flag `00`, así que la correlación entre servicios se mantiene. Muestrear el 100% en un
 > servicio con tráfico real es caro y casi nunca hace falta.
 
-> **`mto-stock` todavía no tiene trazado.** Hoy la traza llega a su borde y ahí se corta: `mto-stock`
-> no lleva ninguna dependencia de tracing. Añadírselo es el siguiente paso natural de la plataforma,
-> y es una tarde de trabajo: el mismo starter y el mismo bloque de configuración que hay aquí.
+> **La cadena está completa.** Los tres servicios llevan ya el mismo montaje, así que una petición
+> se sigue entera: gateway → `mto-configuration` → (cola de RabbitMQ) → `mto-stock`. El salto por la
+> cola también: `mto-configuration` escribe `traceparent`/`tracestate` en las cabeceras AMQP al
+> publicar desde el outbox, y el consumidor de `mto-stock` los continúa
+> (`spring.rabbitmq.listener.simple.observation-enabled`).
+
+### Dónde se ven las trazas
+
+El colector es un **Jaeger** *all-in-one*. Habla OTLP de forma nativa, así que no hace falta un
+OpenTelemetry Collector delante: los tres servicios exportan directamente a él. Los stacks de
+`mto-configuration` y de `mto-stock` traen cada uno el suyo, para poder levantarse solos igual que
+cada uno trae su Keycloak; el gateway no lleva ninguno porque su `compose.yaml` es solo el gateway.
+
+| | |
+|---|---|
+| Interfaz web | http://localhost:16686 |
+| Ingesta OTLP por HTTP | `4318` — la que usan los tres servicios |
+| Ingesta OTLP por gRPC | `4317` |
+
+Los tres lo alcanzan por el mismo nombre, **`otel.mto.local`**, resuelto por el host con
+`extra_hosts` — el mismo idioma que ya se usaba con Keycloak (`auth.mto.local`). Los dos Jaeger
+chocan en los mismos puertos del host si se levantan los dos stacks, exactamente como ya chocan
+Postgres, RabbitMQ y Keycloak, y **eso es justo lo que hace que funcione**: el que se quede con el
+puerto recibe todas las trazas, así que una petición que empieza aquí y termina en `mto-stock` se ve
+entera en un solo visor. Un colector alcanzable solo dentro de cada stack dejaría cada traza
+distribuida partida entre visores distintos.
+
+Fuera de compose (`mvnw spring-boot:run`) ese nombre no resuelve: ahí vale el valor por defecto,
+`http://localhost:4318/v1/traces`, con el Jaeger publicado en el host.
+
+Las trazas **no se persisten**: Jaeger las guarda en memoria y se pierden al parar el contenedor.
+Persistirlas pediría Elasticsearch o Cassandra detrás, que es mucho aparato para mirar una traza
+mientras se depura.
 
 Las métricas OTLP van **apagadas** (`management.otlp.metrics.export.enabled: false`): el starter
 arrastra también un registro OTLP de métricas y, sin eso, el gateway las empujaría a un colector

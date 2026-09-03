@@ -18,6 +18,10 @@ services:
       MTO_CONFIGURATION_URL: ${MTO_CONFIGURATION_URL:-http://host.docker.internal:8081}
       MTO_STOCK_URL: ${MTO_STOCK_URL:-http://host.docker.internal:8080}
       KEYCLOAK_ISSUER_URI: ${KEYCLOAK_ISSUER_URI:-http://auth.mto.local:8082/realms/mto}
+      # El colector vive en el stack de mto-configuration y se alcanza por el host, igual que
+      # Keycloak. El gateway es donde NACE la traza, asi que si esta URL no apunta al mismo
+      # sitio que la de los otros dos, no hay traza distribuida que valga.
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-http://otel.mto.local:4318/v1/traces}
       APP_CORS_ALLOWED_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS:-http://localhost:4200}
       JAVA_OPTS: ${JAVA_OPTS:-}
     # En Linux 'host.docker.internal' no existe salvo que se declare; en Docker Desktop ya viene.
@@ -26,6 +30,7 @@ services:
       # El realm se emite con este nombre, asi que el gateway tiene que resolverlo igual que lo
       # resuelven mto-configuration y mto-stock.
       - 'auth.mto.local:host-gateway'
+      - 'otel.mto.local:host-gateway'
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://localhost:${SERVER_PORT:-8090}/actuator/health']
       interval: 15s
