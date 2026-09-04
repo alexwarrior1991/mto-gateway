@@ -180,13 +180,23 @@ La suite **no necesita Docker**: el servicio de destino de las pruebas de enruta
 
 ### Con Docker
 
+Lo habitual es levantarlo desde [`mto-platform`](../mto-platform), que trae la infraestructura
+compartida del dominio y la imagen ya publicada:
+
 ```bash
-cp .env.example .env
-docker compose up --build
+cd ../mto-platform
+docker compose --profile all up -d
+./keycloak/apply-partials.sh
 ```
 
-`compose.yaml` levanta solo el gateway; la base de datos, RabbitMQ, Redis y Keycloak los levantan
-los stacks de `mto-configuration` y `mto-stock`.
+Para probar una construcción local del gateway contra esa misma infraestructura:
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+`compose.yaml` levanta solo el gateway: no persiste nada y no tiene infraestructura propia.
 
 ---
 
@@ -277,7 +287,7 @@ fallo más confuso posible.
 
 Por eso `KEYCLOAK_AUDIENCE_VALIDATION_ENABLED=false` de serie. El requisito previo —que el
 *audience mapper* de `mto-frontend` emita `mto-gateway-api` junto a `mto-configuration-api` y
-`mto-stock-api` en el mismo token— **ya está puesto** en el realm de `mto-configuration`, así que
+`mto-stock-api` en el mismo token— **ya está puesto** en el realm base de `mto-platform`, así que
 activarla es solo cambiar dos variables:
 
 ```bash
@@ -296,37 +306,29 @@ plataforma deja de ser un fallo de arranque.
 ### El cliente en Keycloak
 
 El gateway aporta su propio cliente al realm con `keycloak/mto-gateway-partial-import.json`, igual
-que hace `mto-stock` con el suyo. No va dentro del `mto-realm.json` de `mto-configuration`: ese
-fichero es el que **crea** el realm, y un compuesto que nombre un cliente que aún no existe aborta la
-importación entera. `RealmDefinitionsTest`, en `mto-configuration`, vigila justamente eso.
+que hacen `mto-configuration` y `mto-stock` con los suyos. No va dentro del realm base: ese fichero
+es el que **crea** el realm, y un compuesto que nombre un cliente que aún no existe aborta la
+importación entera.
 
 | Qué | Dónde |
 |---|---|
 | Cliente `mto-gateway-api` y sus roles `ops-metrics` / `ops-write` | `keycloak/mto-gateway-partial-import.json`, en **este** repo |
-| `mto-ops` ampliado para cubrir también el gateway | `keycloak/mto-ops-cross-service.json`, en **`mto-configuration`** |
-| *Audience mapper* de `mto-frontend` hacia `mto-gateway-api` | `keycloak/mto-realm.json`, en **`mto-configuration`** |
+| `mto-ops` ampliado para cubrir también el gateway | `keycloak/mto-ops-cross-service.json`, en **`mto-platform`** |
+| *Audience mapper* de `mto-frontend` hacia `mto-gateway-api` | `keycloak/mto-realm.json`, en **`mto-platform`** |
 
-Se aplica como importación parcial, con el realm ya creado:
+Lo aplica todo, en orden, el guion de la plataforma:
 
 ```bash
-TOKEN=$(curl -s -d 'client_id=admin-cli' -d 'username=admin' -d "password=$KC_ADMIN_PASSWORD" \
-  -d 'grant_type=password' "$KC_URL/realms/master/protocol/openid-connect/token" | jq -r .access_token)
-
-# 1. El cliente del gateway y sus permisos
-curl -X POST "$KC_URL/admin/realms/mto/partialImport" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  --data-binary @keycloak/mto-gateway-partial-import.json
-
-# 2. Y DESPUES, desde mto-configuration, el perfil de operacion que ya cubre los tres
-curl -X POST "$KC_URL/admin/realms/mto/partialImport" \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  --data-binary @../mto-configuration/keycloak/mto-ops-cross-service.json
+cd ../mto-platform && ./keycloak/apply-partials.sh
 ```
 
-El orden importa: el segundo fichero nombra `mto-gateway-api`, así que el cliente tiene que existir
-antes. Sin el paso 2, `/actuator/prometheus` del gateway queda cerrado incluso para quien tiene el
-perfil `mto-ops` — una importación parcial **reescribe el rol entero**, de modo que el fichero
-cross-service repite los permisos de los tres servicios y aplicarlo es lo que los junta.
+El orden importa: `mto-ops-cross-service.json` nombra `mto-gateway-api`, así que el cliente tiene
+que existir antes. Sin ese paso, `/actuator/prometheus` del gateway queda cerrado incluso para quien
+tiene el perfil `mto-ops` — una importación parcial **reescribe el rol entero**, de modo que el
+fichero cross-service repite los permisos de los tres servicios y aplicarlo es lo que los junta.
+
+`mto-platform/scripts/check_realm_consistency.py` recorre todos los ficheros en el orden en que se
+aplican y falla si alguno nombra un cliente o un rol que todavía no existe.
 
 ---
 

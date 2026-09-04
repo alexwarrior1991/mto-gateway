@@ -1,9 +1,11 @@
-# Solo el gateway. La base de datos, RabbitMQ, Redis y Keycloak los levantan los stacks de
-# mto-configuration y de mto-stock: el gateway no persiste nada y no tiene infraestructura propia.
+# Solo el gateway. La infraestructura -Keycloak, el colector de trazas y todo lo demas- la levanta
+# mto-platform: el gateway no persiste nada y no tiene infraestructura propia.
 #
-# Por defecto apunta a los servicios publicados en el host (8081 y 8080), que es como se arrancan
-# esos dos stacks. Para meterlo en la red de uno de ellos, descomentar el bloque 'networks' y usar
-# nombres de servicio en las URLs.
+# Lo habitual es no usar este fichero: 'docker compose --profile gateway up -d' en mto-platform
+# levanta la imagen ya publicada. Este sirve para probar una construccion local.
+#
+# Por defecto apunta a los servicios publicados en el host (8081 y 8080), que es donde los publica
+# mto-platform, de modo que da igual si una aplicacion corre en su compose o arrancada desde el IDE.
 services:
   gateway:
     build:
@@ -39,7 +41,3 @@ services:
       start_period: 40s
     restart: unless-stopped
 
-# networks:
-#   default:
-#     name: mto-stock-network
-#     external: true
