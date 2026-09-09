@@ -167,8 +167,9 @@ management:
       show-components: when-authorized
       roles: OPS_METRICS
   # Trazabilidad distribuida. El gateway es el borde: aqui es donde nace la traza que despues
-  # continua en mto-configuration. Ojo, mto-stock todavia NO tiene trazado, asi que hoy la cadena
-  # termina en su borde; ver README.md.
+  # continua en mto-configuration y en mto-stock, los tres contra el mismo colector. La cadena llega
+  # incluso al salto asincrono, porque mto-configuration inyecta el contexto en las cabeceras del
+  # mensaje y el consumidor de mto-stock lo continua; ver README.md.
   tracing:
     enabled: ${MTO_TRACING_ENABLED:true}
     sampling:
