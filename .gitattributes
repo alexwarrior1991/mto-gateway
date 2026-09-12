@@ -1,2 +1,16 @@
+# Finales de linea. Un fichero que un interprete lee linea a linea no puede depender de la
+# configuracion de quien lo clona: con el core.autocrlf=true que trae Git para Windows por
+# defecto, un .sh sale del checkout con CRLF y bash se come el \r como parte del comando:
+#
+#   ./script.sh: line 19: $'\r': command not found
+#   : invalid option namept.sh: line 20: set: pipefail
+#
+# El segundo mensaje es el propio retorno de carro devolviendo el cursor al principio de la
+# linea y pisando lo ya escrito. Paso de verdad con apply-partials.sh de mto-platform.
+#
+# Aqui no hay ningun .sh todavia, asi que la regla es preventiva: el sitio para ponerla es
+# antes de que haga falta, no despues de perder una tarde. El .cmd va a CRLF por lo
+# contrario: cmd.exe si necesita los dos caracteres.
 /mvnw text eol=lf
+*.sh text eol=lf
 *.cmd text eol=crlf
