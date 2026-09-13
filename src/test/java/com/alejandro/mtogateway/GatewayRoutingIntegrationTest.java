@@ -100,6 +100,7 @@ class GatewayRoutingIntegrationTest {
         String uri = "http://127.0.0.1:" + DOWNSTREAM.getAddress().getPort();
         registry.add("app.services.configuration.url", () -> uri);
         registry.add("app.services.stock.url", () -> uri);
+        registry.add("app.services.maintenance.url", () -> uri);
     }
 
     @AfterAll
@@ -188,6 +189,22 @@ class GatewayRoutingIntegrationTest {
     void theStockActuatorRouteIsRewrittenTheSameWay() throws Exception {
         anonymous("/api/stock/actuator/health");
 
+        assertEquals(List.of("/actuator/health"), RECEIVED_PATHS);
+    }
+
+    @Test
+    void theMaintenancePrefixIsRewrittenToTheVersionedInternalPath() throws Exception {
+        HttpResponse<String> response = authenticated("/api/maintenance/orders?status=PLANNED");
+
+        assertEquals(200, response.statusCode());
+        assertEquals(List.of("/api/v1/maintenance/orders?status=PLANNED"), RECEIVED_PATHS);
+    }
+
+    @Test
+    void theMaintenanceActuatorRouteWinsOverItsApiRoute() throws Exception {
+        HttpResponse<String> response = anonymous("/api/maintenance/actuator/health");
+
+        assertEquals(200, response.statusCode(), "La sonda de salud no exige token");
         assertEquals(List.of("/actuator/health"), RECEIVED_PATHS);
     }
 

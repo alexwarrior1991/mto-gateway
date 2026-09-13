@@ -19,6 +19,7 @@ Servicios detrás:
 |---|---|
 | [`mto-configuration`](../mto-configuration) | Infraestructura ferroviaria: líneas, tramos, estaciones, vías, perfiles, ménsulas, seccionadores, paquetes de ejecución y los catálogos técnicos (LOV). |
 | [`mto-stock`](../mto-stock) | Inventario: materiales, almacenes, movimientos, reservas, proyectos y conjuntos (BOM). |
+| [`mto-maintenance`](../mto-maintenance) | Mantenimiento de catenaria: activos, órdenes preventivas y correctivas, turnos, inspecciones, defectos, materiales e informes. |
 
 ---
 
@@ -30,6 +31,8 @@ Servicios detrás:
 | `/api/configuration/**` | `MTO_CONFIGURATION_URL` | `/api/v1/configuration/**` | `mtoConfiguration` |
 | `/api/stock/actuator/**` | `MTO_STOCK_URL` | `/actuator/**` | no |
 | `/api/stock/**` | `MTO_STOCK_URL` | `/api/v1/inventory/**` | `mtoStock` |
+| `/api/maintenance/actuator/**` | `MTO_MAINTENANCE_URL` | `/actuator/**` | no |
+| `/api/maintenance/**` | `MTO_MAINTENANCE_URL` | `/api/v1/maintenance/**` | `mtoMaintenance` |
 | `/actuator/**` | *el propio gateway* | — | — |
 
 Tres detalles que evitan sorpresas:
@@ -127,6 +130,7 @@ partir de una base.
 | `SPRING_PROFILES_ACTIVE` | *(ninguno)* | `local` o `docker` |
 | `MTO_CONFIGURATION_URL` | `http://localhost:8081` | Destino de `/api/configuration/**` |
 | `MTO_STOCK_URL` | `http://localhost:8080` | Destino de `/api/stock/**` |
+| `MTO_MAINTENANCE_URL` | `http://localhost:8083` | Destino de `/api/maintenance/**` |
 | `GATEWAY_CONNECT_TIMEOUT` | `2s` | Abrir el socket contra el servicio |
 | `GATEWAY_READ_TIMEOUT` | `15s` | Tiempo máximo sin recibir bytes |
 | `GATEWAY_CIRCUIT_BREAKER_TIMEOUT` | `20s` | Red de seguridad de Resilience4j |
@@ -143,7 +147,7 @@ partir de una base.
 | `SPRING_THREADS_VIRTUAL_ENABLED` | `true` | Hilos virtuales para el proxy bloqueante |
 
 > **Aviso sobre puertos.** En local, `mto-stock` escucha en el **8080**, `mto-configuration` en el
-> **8081** y Keycloak en el **8082**. Por eso el gateway usa el 8090 y `MTO_STOCK_URL` apunta al
+> **8081**, Keycloak en el **8082** y `mto-maintenance` en el **8083**. Por eso el gateway usa el 8090 y `MTO_STOCK_URL` apunta al
 > 8080. Un gateway apuntando al 8082 arrancaría sin quejarse y devolvería 404 del proveedor de
 > identidad, que se parecen mucho a un fallo de enrutado.
 
@@ -210,6 +214,7 @@ curl -i http://localhost:8090/actuator/health
 # funciona no deberia exigir montar Keycloak.
 curl -i http://localhost:8090/api/configuration/actuator/health
 curl -i http://localhost:8090/api/stock/actuator/health
+curl -i http://localhost:8090/api/maintenance/actuator/health
 
 # Una llamada de negocio. Sin token, 401 del gateway.
 curl -i http://localhost:8090/api/stock/materials
@@ -280,7 +285,7 @@ otros dos servicios. Son roles **de cliente**, así que hay que declararlos en e
 ### Por qué la audiencia no se valida aquí
 
 Las audiencias son **por servicio**: `mto-configuration` exige `aud ⊇ {mto-configuration-api}` y
-`mto-stock` exige `aud ⊇ {mto-stock-api}`. Ningún token que circula hoy lleva una audiencia del
+`mto-stock` exige `aud ⊇ {mto-stock-api}`, `mto-maintenance` exige `aud ⊇ {mto-maintenance-api}`. Ningún token que circula hoy lleva una audiencia del
 gateway. Si el gateway exigiera la suya, rechazaría tokens que los servicios sí aceptan; y si además
 dejara pasar uno sin la audiencia del destino, el 401 llegaría **después** del gateway, que es el
 fallo más confuso posible.
@@ -513,6 +518,7 @@ docker pull ghcr.io/<owner>/mto-gateway@sha256:<digest>
 docker run -d --name mto-gateway -p 8090:8090 \
   -e MTO_CONFIGURATION_URL=http://mto-configuration-api:8080 \
   -e MTO_STOCK_URL=http://mto-stock-app:8080 \
+  -e MTO_MAINTENANCE_URL=http://mto-maintenance-app:8080 \
   -e KEYCLOAK_ISSUER_URI=https://auth.example.com/realms/mto \
   -e APP_CORS_ALLOWED_ORIGINS=https://mto.example.com \
   ghcr.io/<owner>/mto-gateway@sha256:<digest>

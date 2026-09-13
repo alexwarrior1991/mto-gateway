@@ -48,7 +48,7 @@ class MtoGatewayApplicationTests {
     }
 
     /**
-     * Comprobación barata que caza erratas en el YAML: los identificadores de las cuatro rutas y,
+     * Comprobación barata que caza erratas en el YAML: los identificadores de las seis rutas y,
      * sobre todo, que las de Actuator tienen un {@code order} menor que las de la API. Que el orden
      * además funcione de verdad lo prueba {@code GatewayRoutingIntegrationTest} contra un servicio
      * real.
@@ -58,12 +58,12 @@ class MtoGatewayApplicationTests {
         List<RouteProperties> routes = gatewayProperties.getRoutes();
 
         assertEquals(
-                List.of("mto-configuration-actuator", "mto-stock-actuator",
-                        "mto-configuration-api", "mto-stock-api"),
+                List.of("mto-configuration-actuator", "mto-stock-actuator", "mto-maintenance-actuator",
+                        "mto-configuration-api", "mto-stock-api", "mto-maintenance-api"),
                 routes.stream().map(RouteProperties::getId).toList());
 
-        int lastActuatorOrder = Math.max(routes.get(0).getOrder(), routes.get(1).getOrder());
-        int firstApiOrder = Math.min(routes.get(2).getOrder(), routes.get(3).getOrder());
+        int lastActuatorOrder = routes.subList(0, 3).stream().mapToInt(RouteProperties::getOrder).max().orElseThrow();
+        int firstApiOrder = routes.subList(3, 6).stream().mapToInt(RouteProperties::getOrder).min().orElseThrow();
         assertTrue(lastActuatorOrder < firstApiOrder,
                 "Las rutas de Actuator tienen que evaluarse antes que el comodín de la API");
     }

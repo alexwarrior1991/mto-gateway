@@ -57,6 +57,7 @@ class GatewayFallbackIntegrationTest {
     static void pointStockAtNothing(DynamicPropertyRegistry registry) {
         String dead = "http://127.0.0.1:" + closedPort();
         registry.add("app.services.stock.url", () -> dead);
+        registry.add("app.services.maintenance.url", () -> dead);
         registry.add("app.services.configuration.url", () -> dead);
     }
 
