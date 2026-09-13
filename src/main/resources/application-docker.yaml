@@ -1,5 +1,5 @@
 # Perfil para cuando el gateway corre dentro de la red de Docker: los servicios se resuelven por
-# nombre de contenedor y en su puerto interno (8080 los dos), no por los puertos publicados en el
+# nombre de contenedor y en su puerto interno (8080 los tres), no por los puertos publicados en el
 # host.
 #
 # Solo cambian los destinos. La tabla de rutas no se repite aquí a propósito: las rutas apuntan a
@@ -12,3 +12,5 @@ app:
       url: ${MTO_CONFIGURATION_URL:http://mto-configuration-api:8080}
     stock:
       url: ${MTO_STOCK_URL:http://mto-stock-app:8080}
+    maintenance:
+      url: ${MTO_MAINTENANCE_URL:http://mto-maintenance-app:8080}

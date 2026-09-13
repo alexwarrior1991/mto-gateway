@@ -19,6 +19,7 @@ services:
       SERVER_PORT: ${SERVER_PORT:-8090}
       MTO_CONFIGURATION_URL: ${MTO_CONFIGURATION_URL:-http://host.docker.internal:8081}
       MTO_STOCK_URL: ${MTO_STOCK_URL:-http://host.docker.internal:8080}
+      MTO_MAINTENANCE_URL: ${MTO_MAINTENANCE_URL:-http://host.docker.internal:8083}
       KEYCLOAK_ISSUER_URI: ${KEYCLOAK_ISSUER_URI:-http://auth.mto.local:8082/realms/mto}
       # El colector vive en el stack de mto-configuration y se alcanza por el host, igual que
       # Keycloak. El gateway es donde NACE la traza, asi que si esta URL no apunta al mismo
@@ -30,7 +31,7 @@ services:
     extra_hosts:
       - 'host.docker.internal:host-gateway'
       # El realm se emite con este nombre, asi que el gateway tiene que resolverlo igual que lo
-      # resuelven mto-configuration y mto-stock.
+      # resuelven mto-configuration, mto-stock y mto-maintenance.
       - 'auth.mto.local:host-gateway'
       - 'otel.mto.local:host-gateway'
     healthcheck:

@@ -73,6 +73,14 @@ spring:
               filters:
                 - RewritePath=/api/stock/actuator(?<segment>.*), /actuator$\{segment}
 
+            - id: mto-maintenance-actuator
+              uri: ${app.services.maintenance.url}
+              order: 2
+              predicates:
+                - Path=/api/maintenance/actuator/**
+              filters:
+                - RewritePath=/api/maintenance/actuator(?<segment>.*), /actuator$\{segment}
+
             # --- API de cada servicio ------------------------------------------------------
             # El prefijo publico no lleva version a proposito: '/api/configuration' es el contrato
             # con el cliente y '/api/v1/configuration' es un detalle interno del servicio. El dia
@@ -107,6 +115,21 @@ spring:
                   args:
                     id: mtoStock
                     fallbackUri: forward:/fallback/stock
+
+            # Mantenimiento de catenaria: ordenes, turnos, inspecciones, defectos y materiales.
+            # Aqui los dos prefijos coinciden ('/api/maintenance' -> '/api/v1/maintenance'); se
+            # mantiene RewritePath por uniformidad con las otras dos rutas.
+            - id: mto-maintenance-api
+              uri: ${app.services.maintenance.url}
+              order: 12
+              predicates:
+                - Path=/api/maintenance/**
+              filters:
+                - RewritePath=/api/maintenance(?<segment>.*), /api/v1/maintenance$\{segment}
+                - name: CircuitBreaker
+                  args:
+                    id: mtoMaintenance
+                    fallbackUri: forward:/fallback/maintenance
 
 server:
   # 8090 y no 8080: en local el 8080 lo ocupa mto-stock, el 8081 mto-configuration y el 8082
@@ -154,6 +177,8 @@ resilience4j:
       mtoConfiguration:
         base-config: default
       mtoStock:
+        base-config: default
+      mtoMaintenance:
         base-config: default
 
 management:
@@ -223,6 +248,9 @@ app:
       # quejarse y devolveria 404 del proveedor de identidad, que se parecen mucho a un fallo de
       # enrutado. mto-stock escucha en el 8080 del host. Ver README.md.
       url: ${MTO_STOCK_URL:http://localhost:8080}
+    maintenance:
+      # 8083: el siguiente libre despues de stock (8080), configuration (8081) y Keycloak (8082).
+      url: ${MTO_MAINTENANCE_URL:http://localhost:8083}
 
   security:
     # Cliente de este servicio en el realm. Lo usa el conversor para leer los roles de
