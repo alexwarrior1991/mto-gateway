@@ -81,6 +81,14 @@ spring:
               filters:
                 - RewritePath=/api/maintenance/actuator(?<segment>.*), /actuator$\{segment}
 
+            - id: mto-users-actuator
+              uri: ${app.services.users.url}
+              order: 3
+              predicates:
+                - Path=/api/users/actuator/**
+              filters:
+                - RewritePath=/api/users/actuator(?<segment>.*), /actuator$\{segment}
+
             # --- API de cada servicio ------------------------------------------------------
             # El prefijo publico no lleva version a proposito: '/api/configuration' es el contrato
             # con el cliente y '/api/v1/configuration' es un detalle interno del servicio. El dia
@@ -131,6 +139,18 @@ spring:
                     id: mtoMaintenance
                     fallbackUri: forward:/fallback/maintenance
 
+            - id: mto-users-api
+              uri: ${app.services.users.url}
+              order: 13
+              predicates:
+                - Path=/api/users/**
+              filters:
+                - RewritePath=/api/users(?<segment>.*), /api/v1/users$\{segment}
+                - name: CircuitBreaker
+                  args:
+                    id: mtoUsers
+                    fallbackUri: forward:/fallback/users
+
 server:
   # 8090 y no 8080: en local el 8080 lo ocupa mto-stock, el 8081 mto-configuration y el 8082
   # Keycloak.
@@ -179,6 +199,8 @@ resilience4j:
       mtoStock:
         base-config: default
       mtoMaintenance:
+        base-config: default
+      mtoUsers:
         base-config: default
 
 management:
@@ -251,6 +273,9 @@ app:
     maintenance:
       # 8083: el siguiente libre despues de stock (8080), configuration (8081) y Keycloak (8082).
       url: ${MTO_MAINTENANCE_URL:http://localhost:8083}
+    users:
+      # 8084: el siguiente libre despues de mto-maintenance (8083).
+      url: ${MTO_USERS_URL:http://localhost:8084}
 
   security:
     # Cliente de este servicio en el realm. Lo usa el conversor para leer los roles de

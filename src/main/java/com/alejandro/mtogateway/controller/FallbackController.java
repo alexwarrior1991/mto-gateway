@@ -48,7 +48,8 @@ public class FallbackController {
     private static final Map<String, DownstreamService> SERVICES = Map.of(
             "configuration", new DownstreamService("mto-configuration", "mtoConfiguration"),
             "stock", new DownstreamService("mto-stock", "mtoStock"),
-            "maintenance", new DownstreamService("mto-maintenance", "mtoMaintenance")
+            "maintenance", new DownstreamService("mto-maintenance", "mtoMaintenance"),
+            "users", new DownstreamService("mto-users", "mtoUsers")
     );
 
     private final CircuitBreakerRegistry circuitBreakerRegistry;

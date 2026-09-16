@@ -59,6 +59,7 @@ class GatewayFallbackIntegrationTest {
         registry.add("app.services.stock.url", () -> dead);
         registry.add("app.services.maintenance.url", () -> dead);
         registry.add("app.services.configuration.url", () -> dead);
+        registry.add("app.services.users.url", () -> dead);
     }
 
     @MockitoBean
@@ -115,6 +116,7 @@ class GatewayFallbackIntegrationTest {
     @Test
     void eachServiceGetsItsOwnFallback() throws Exception {
         assertTrue(call("/api/configuration/profiles").body().contains("mto-configuration"));
+        assertTrue(call("/api/users/profiles").body().contains("mto-users"));
     }
 
     /**

@@ -58,12 +58,12 @@ class MtoGatewayApplicationTests {
         List<RouteProperties> routes = gatewayProperties.getRoutes();
 
         assertEquals(
-                List.of("mto-configuration-actuator", "mto-stock-actuator", "mto-maintenance-actuator",
-                        "mto-configuration-api", "mto-stock-api", "mto-maintenance-api"),
+                List.of("mto-configuration-actuator", "mto-stock-actuator", "mto-maintenance-actuator", "mto-users-actuator",
+                        "mto-configuration-api", "mto-stock-api", "mto-maintenance-api", "mto-users-api"),
                 routes.stream().map(RouteProperties::getId).toList());
 
-        int lastActuatorOrder = routes.subList(0, 3).stream().mapToInt(RouteProperties::getOrder).max().orElseThrow();
-        int firstApiOrder = routes.subList(3, 6).stream().mapToInt(RouteProperties::getOrder).min().orElseThrow();
+        int lastActuatorOrder = routes.subList(0, 4).stream().mapToInt(RouteProperties::getOrder).max().orElseThrow();
+        int firstApiOrder = routes.subList(4, 8).stream().mapToInt(RouteProperties::getOrder).min().orElseThrow();
         assertTrue(lastActuatorOrder < firstApiOrder,
                 "Las rutas de Actuator tienen que evaluarse antes que el comodín de la API");
     }

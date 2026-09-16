@@ -14,3 +14,5 @@ app:
       url: ${MTO_STOCK_URL:http://mto-stock-app:8080}
     maintenance:
       url: ${MTO_MAINTENANCE_URL:http://mto-maintenance-app:8080}
+    users:
+      url: ${MTO_USERS_URL:http://mto-users-app:8080}
