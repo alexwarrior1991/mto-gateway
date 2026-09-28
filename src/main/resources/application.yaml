@@ -89,6 +89,14 @@ spring:
               filters:
                 - RewritePath=/api/users/actuator(?<segment>.*), /actuator$\{segment}
 
+            - id: mto-notification-actuator
+              uri: ${app.services.notification.url}
+              order: 4
+              predicates:
+                - Path=/api/notifications/actuator/**
+              filters:
+                - RewritePath=/api/notifications/actuator(?<segment>.*), /actuator$\{segment}
+
             # --- API de cada servicio ------------------------------------------------------
             # El prefijo publico no lleva version a proposito: '/api/configuration' es el contrato
             # con el cliente y '/api/v1/configuration' es un detalle interno del servicio. El dia
@@ -151,6 +159,21 @@ spring:
                     id: mtoUsers
                     fallbackUri: forward:/fallback/users
 
+            # Registro de actividad y notificaciones del dominio: la bandeja de cada persona, el
+            # registro y los accesos. 'notifications' en plural de puertas afuera, como el resto de
+            # prefijos publicos; el servicio sirve en /api/v1/notifications.
+            - id: mto-notification-api
+              uri: ${app.services.notification.url}
+              order: 14
+              predicates:
+                - Path=/api/notifications/**
+              filters:
+                - RewritePath=/api/notifications(?<segment>.*), /api/v1/notifications$\{segment}
+                - name: CircuitBreaker
+                  args:
+                    id: mtoNotification
+                    fallbackUri: forward:/fallback/notification
+
 server:
   # 8090 y no 8080: en local el 8080 lo ocupa mto-stock, el 8081 mto-configuration y el 8082
   # Keycloak.
@@ -201,6 +224,8 @@ resilience4j:
       mtoMaintenance:
         base-config: default
       mtoUsers:
+        base-config: default
+      mtoNotification:
         base-config: default
 
 management:
@@ -276,6 +301,9 @@ app:
     users:
       # 8084: el siguiente libre despues de mto-maintenance (8083).
       url: ${MTO_USERS_URL:http://localhost:8084}
+    notification:
+      # 8086: el siguiente libre despues del backoffice (8085).
+      url: ${MTO_NOTIFICATION_URL:http://localhost:8086}
 
   security:
     # Cliente de este servicio en el realm. Lo usa el conversor para leer los roles de

@@ -49,7 +49,8 @@ public class FallbackController {
             "configuration", new DownstreamService("mto-configuration", "mtoConfiguration"),
             "stock", new DownstreamService("mto-stock", "mtoStock"),
             "maintenance", new DownstreamService("mto-maintenance", "mtoMaintenance"),
-            "users", new DownstreamService("mto-users", "mtoUsers")
+            "users", new DownstreamService("mto-users", "mtoUsers"),
+            "notification", new DownstreamService("mto-notification", "mtoNotification")
     );
 
     private final CircuitBreakerRegistry circuitBreakerRegistry;
