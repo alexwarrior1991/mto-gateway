@@ -16,3 +16,5 @@ app:
       url: ${MTO_MAINTENANCE_URL:http://mto-maintenance-app:8080}
     users:
       url: ${MTO_USERS_URL:http://mto-users-app:8080}
+    notification:
+      url: ${MTO_NOTIFICATION_URL:http://mto-notification-app:8080}
