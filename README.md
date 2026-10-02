@@ -363,16 +363,16 @@ con un 403 el origen que no está en la lista antes de gastar una llamada contra
 deja pasar cruza el proxy **sin nada de CORS**, en los dos sentidos:
 
 - **Hacia el servicio** se quitan `Origin` y las `Access-Control-*` (`RemoveCorsRequestHeadersFilter`).
-  Cada servicio tiene su propio CORS, registrado en `/**` y con su propia lista de orígenes (solo el
-  4200), para quien le llame directamente. Mientras el gateway reenviaba `Origin`, ese CORS se
-  volvía a aplicar: una llamada desde el 5173, que el gateway admite, acababa en el 403 del
-  servicio, y una desde el 4200 volvía con dos `Access-Control-Allow-Origin`, que el navegador
-  rechaza. Sin `Origin`, Spring no ve una petición CORS y no hace nada.
+  Los servicios ya no tienen CORS propio, pero lo tuvieron, registrado en `/**` y solo con el 4200.
+  Mientras el gateway reenviaba `Origin`, ese CORS se volvía a aplicar: una llamada desde el 5173,
+  que el gateway admite, acababa en el 403 del servicio, y una desde el 4200 volvía con dos
+  `Access-Control-Allow-Origin`, que el navegador rechaza. Sin `Origin`, un servicio que traiga su
+  propio CORS (uno nuevo, otra pila) no ve una petición CORS y no hace nada.
 - **De vuelta** se quitan las `Access-Control-*` que traiga la respuesta y, de `Vary`, lo que nombra
   una cabecera de petición CORS (`RemoveCorsResponseHeadersFilter`). El `CorsFilter` del gateway
   escribe sus cabeceras antes de que exista la respuesta del servicio y el proxy *añade* las de
-  este, así que cualquier `Access-Control-Allow-Origin` del servicio sería el segundo. Un servicio
-  con el CORS de Spring ya no pone ninguno; esto cubre al que lo pusiera igualmente.
+  este, así que cualquier `Access-Control-Allow-Origin` del servicio sería el segundo. Ninguno de
+  los del dominio lo pone; esto cubre al que lo pusiera igualmente.
 
 Los dos son beans `HttpHeadersFilter`, que el proxy aplica a todas las rutas: como la correlación,
 no hay que declarar nada al añadir un servicio. Lo que contesta el propio gateway (su Actuator, los

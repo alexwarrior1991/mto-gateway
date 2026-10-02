@@ -16,13 +16,14 @@ import java.util.Map;
  * <p>El {@code CorsFilter} del gateway escribe sus cabeceras antes de que exista la respuesta del
  * servicio, y el proxy <em>añade</em> las del servicio a las que ya hay: un
  * {@code Access-Control-Allow-Origin} del servicio sería el segundo, y el navegador rechaza la
- * respuesta entera. Con {@link RemoveCorsRequestHeadersFilter}, un servicio con el CORS de Spring ya
- * no pone ninguno, porque no le llega {@code Origin}; esto cubre al que lo pusiera igualmente, con
- * otra pila u otra configuración.</p>
+ * respuesta entera. Los servicios del dominio no tienen CORS propio, y con
+ * {@link RemoveCorsRequestHeadersFilter} uno con el CORS de Spring tampoco pondría ninguno, porque no
+ * le llega {@code Origin}; esto cubre al que lo pusiera igualmente, con otra pila u otra
+ * configuración.</p>
  *
- * <p>El {@code Vary: Origin} que Spring pone en cada respuesta sí sigue llegando, y aguas abajo no
- * significa nada: el servicio no puede variar por una cabecera que ya no recibe. El que vale es el
- * del gateway. El resto de {@code Vary} se conserva.</p>
+ * <p>Un servicio con el CORS de Spring pone además {@code Vary: Origin} en cada respuesta, y aguas
+ * abajo eso no significa nada: el servicio no puede variar por una cabecera que ya no recibe. El que
+ * vale es el del gateway. El resto de {@code Vary} se conserva.</p>
  *
  * <p>Lo que contesta el propio gateway —sus endpoints, el 503 del fallback, al que se llega por un
  * {@code forward}— no pasa por aquí: ahí no hay más CORS que el suyo.</p>

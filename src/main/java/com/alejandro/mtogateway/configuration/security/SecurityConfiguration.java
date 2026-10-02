@@ -137,9 +137,9 @@ public class SecurityConfiguration {
      * El gateway en su sabor servlet no trae CORS propio: sus rutas son {@code RouterFunction} de
      * Spring MVC, así que lo que aplica es el CORS de Spring Web de siempre. Este bean lo recoge
      * {@code http.cors(...)} de arriba, de modo que hay un único sitio donde está escrita la
-     * política. Y es la única que ve el navegador: {@link RemoveCorsRequestHeadersFilter} y
-     * {@link RemoveCorsResponseHeadersFilter} impiden que intervenga la que cada servicio tiene para
-     * quien le llame directamente.
+     * política. Y es la única del dominio: los servicios no tienen CORS propio, y
+     * {@link RemoveCorsRequestHeadersFilter} y {@link RemoveCorsResponseHeadersFilter} impiden que
+     * intervenga el de un servicio que lo trajera.
      *
      * <p>La cabecera de correlación se añade aquí a las dos listas en lugar de enumerarse en el
      * YAML. El gateway <em>pone</em> esa cabecera en cada respuesta, así que tiene que aceptarla y

@@ -56,8 +56,8 @@ class GatewayRoutingIntegrationTest {
     private static final String CORRELATION_HEADER = "X-Correlation-Id";
 
     /**
-     * El único origen que admite el CORS propio de cada servicio ({@code APP_CORS_ALLOWED_ORIGIN}).
-     * El gateway admite además el 5173, y esa diferencia es la que destapaba el CORS doble.
+     * El único origen que admitía el CORS propio de cada servicio mientras lo tuvieron. El gateway
+     * admite además el 5173, y esa diferencia es la que destapaba el CORS doble.
      */
     private static final String SERVICE_ALLOWED_ORIGIN = "http://localhost:4200";
 
@@ -94,11 +94,11 @@ class GatewayRoutingIntegrationTest {
     }
 
     /**
-     * Contesta como lo haría uno de los servicios, que tienen su propio CORS registrado en
-     * {@code /**}: el {@code CorsFilter} de Spring pone los tres {@code Vary} en cada respuesta,
-     * añade su {@code Access-Control-Allow-Origin} cuando le llega un {@code Origin} que admite y
-     * contesta 403 cuando le llega uno que no. Sin imitarlo, los tests del CORS doble pasarían
-     * también con el gateway reenviando {@code Origin}.
+     * Contesta como un servicio con su propio CORS registrado en {@code /**}, como lo tuvieron todos
+     * y como lo traería uno nuevo: el {@code CorsFilter} de Spring pone los tres {@code Vary} en cada
+     * respuesta, añade su {@code Access-Control-Allow-Origin} cuando le llega un {@code Origin} que
+     * admite y contesta 403 cuando le llega uno que no. Sin imitarlo, los tests del CORS doble
+     * pasarían también con el gateway reenviando {@code Origin}.
      */
     private static void record(HttpExchange exchange) throws IOException {
         RECEIVED_PATHS.add(exchange.getRequestURI().toString());

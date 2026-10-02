@@ -319,9 +319,8 @@ app:
     audience-validation-enabled: ${KEYCLOAK_AUDIENCE_VALIDATION_ENABLED:false}
     required-audience: ${KEYCLOAK_AUDIENCE:}
     cors:
-      # La unica politica CORS que ve el navegador: el gateway quita Origin antes de llamar a un
-      # servicio y las Access-Control-* de lo que este contesta (README, "CORS"). El CORS propio de
-      # cada servicio solo cuenta para quien le llame directamente.
+      # La unica politica CORS del dominio: los servicios no tienen CORS propio, y el gateway quita
+      # Origin antes de llamarlos y las Access-Control-* de lo que contestan (README, "CORS").
       #
       # Sin comodin: la lista se enumera por entorno. Con allow-credentials activo Spring ademas
       # rechaza '*' en tiempo de ejecucion, asi que ponerlo para salir del paso rompe cada preflight
