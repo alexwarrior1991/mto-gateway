@@ -259,6 +259,11 @@ que permite seguir una petición desde el navegador hasta `mto-stock` y volver.
   colar una cabecera entera contra el servicio de destino.
 - Un valor inválido **se sustituye, no se rechaza**. Devolver un 400 convertiría una cabecera de
   traza —opcional y meramente informativa— en un motivo para tirar la petición.
+- La respuesta la lleva **una sola vez**. `mto-configuration`, `mto-users` y `mto-notification` la
+  devuelven también, y el proxy añade las cabeceras del servicio a las que el gateway ya puso: salía
+  dos veces, y en el navegador `headers.get()` une los valores en uno (`"id, id"`).
+  `RemoveCorrelationResponseHeaderFilter` quita la del servicio, que es el mismo valor: los tres
+  aplican estas mismas reglas y el gateway solo les reenvía un identificador que las cumple.
 
 Va implementado como filtro de servlet (`CorrelationIdFilter`) y no como filtro de ruta: el gateway
 en su sabor servlet no tiene `default-filters`, así que un filtro de ruta habría que repetirlo en
@@ -586,6 +591,7 @@ src/main/java/com/alejandro/mtogateway/
 ├── filter/
 │   ├── CorrelationIdFilter.java                X-Correlation-Id
 │   ├── CorrelationIdProperties.java            app.correlation
+│   ├── RemoveCorrelationResponseHeaderFilter.java sin la correlación del servicio de vuelta
 │   ├── RemoveCorsRequestHeadersFilter.java     sin Origin ni Access-Control-* hacia el servicio
 │   └── RemoveCorsResponseHeadersFilter.java    sin Access-Control-* ni su Vary de vuelta
 └── controller/
@@ -601,7 +607,7 @@ src/main/resources/
 
 src/test/java/com/alejandro/mtogateway/
 ├── MtoGatewayApplicationTests.java             arranque sin base de datos, rutas enlazadas
-├── CorrelationIdFilterTest.java                el filtro, sin contexto de Spring
+├── CorrelationIdFilterTest.java                los filtros de la correlación, sin contexto de Spring
 ├── CorsHeadersFiltersTest.java                 los filtros de cabeceras CORS, sin contexto de Spring
 ├── GatewayRoutingIntegrationTest.java          enrutado, correlación, seguridad y CORS de verdad
 ├── GatewayTracingIntegrationTest.java          la traza nace y se propaga una sola vez

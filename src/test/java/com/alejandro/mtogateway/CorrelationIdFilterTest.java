@@ -2,17 +2,21 @@ package com.alejandro.mtogateway;
 
 import com.alejandro.mtogateway.filter.CorrelationIdFilter;
 import com.alejandro.mtogateway.filter.CorrelationIdProperties;
+import com.alejandro.mtogateway.filter.RemoveCorrelationResponseHeaderFilter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.web.servlet.function.ServerResponse;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -24,14 +28,17 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * El filtro de correlación, sin contexto de Spring: es una pieza de servlet pura y montar el
- * contexto entero solo haría el test más lento y menos concreto.
+ * Los filtros de la correlación, sin contexto de Spring: el de servlet, que pone el identificador, y
+ * el del proxy, que quita la copia que devuelve el servicio. Son piezas puras y montar el contexto
+ * entero solo haría el test más lento y menos concreto.
  */
 class CorrelationIdFilterTest {
 
     private static final String HEADER = "X-Correlation-Id";
 
     private final CorrelationIdFilter filter = new CorrelationIdFilter(new CorrelationIdProperties(HEADER, 64));
+    private final RemoveCorrelationResponseHeaderFilter responseFilter =
+            new RemoveCorrelationResponseHeaderFilter(new CorrelationIdProperties(HEADER, 64));
 
     @AfterEach
     void clearMdc() {
@@ -175,6 +182,37 @@ class CorrelationIdFilterTest {
 
         assertNotNull(headerVisibleInsideTheChain.get());
         assertEquals(1, response.getHeaderValues(HEADER).size(), "Una sola vez, no dos");
+    }
+
+    /**
+     * La copia del servicio sobra: el gateway ya puso la suya antes del proxy, y el proxy la
+     * añadiría al lado. Se quita sin distinguir mayúsculas y el resto se queda.
+     */
+    @Test
+    void theServiceCopyOfTheHeaderIsDroppedAndTheRestIsKept() {
+        HttpHeaders fromTheService = new HttpHeaders();
+        fromTheService.add("x-correlation-id", "probe-123");
+        fromTheService.add(HttpHeaders.CONTENT_TYPE, "application/json");
+        fromTheService.add(HttpHeaders.RETRY_AFTER, "30");
+
+        HttpHeaders filtered = responseFilter.apply(fromTheService, ServerResponse.ok().build());
+
+        assertEquals(Set.of(HttpHeaders.CONTENT_TYPE, HttpHeaders.RETRY_AFTER), filtered.headerNames());
+        assertEquals(List.of("probe-123"), fromTheService.get(HEADER),
+                "Lo que llega se copia, no se toca: puede ser de solo lectura");
+    }
+
+    /** Sigue al nombre configurado, como el resto de la correlación y la política de CORS. */
+    @Test
+    void theResponseFilterFollowsTheConfiguredHeaderName() {
+        HttpHeaders fromTheService = new HttpHeaders();
+        fromTheService.add("X-Trace-Ref", "probe-123");
+        fromTheService.add(HEADER, "not-the-configured-one");
+
+        HttpHeaders filtered = new RemoveCorrelationResponseHeaderFilter(new CorrelationIdProperties("X-Trace-Ref", 64))
+                .apply(fromTheService, ServerResponse.ok().build());
+
+        assertEquals(Set.of(HEADER), filtered.headerNames());
     }
 
     private MockHttpServletRequest get(String uri) {

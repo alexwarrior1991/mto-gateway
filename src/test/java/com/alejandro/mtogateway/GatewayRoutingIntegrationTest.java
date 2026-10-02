@@ -99,6 +99,9 @@ class GatewayRoutingIntegrationTest {
      * respuesta, añade su {@code Access-Control-Allow-Origin} cuando le llega un {@code Origin} que
      * admite y contesta 403 cuando le llega uno que no. Sin imitarlo, los tests del CORS doble
      * pasarían también con el gateway reenviando {@code Origin}.
+     *
+     * <p>Y devuelve la cabecera de correlación que recibe, como mto-configuration, mto-users y
+     * mto-notification.</p>
      */
     private static void record(HttpExchange exchange) throws IOException {
         RECEIVED_PATHS.add(exchange.getRequestURI().toString());
@@ -107,6 +110,10 @@ class GatewayRoutingIntegrationTest {
         RECEIVED_ORIGINS.addAll(exchange.getRequestHeaders().getOrDefault("Origin", List.of()));
 
         Headers responseHeaders = exchange.getResponseHeaders();
+        String correlationId = exchange.getRequestHeaders().getFirst(CORRELATION_HEADER);
+        if (correlationId != null) {
+            responseHeaders.add(CORRELATION_HEADER, correlationId);
+        }
         responseHeaders.add("Vary", "Origin");
         responseHeaders.add("Vary", "Access-Control-Request-Method");
         responseHeaders.add("Vary", "Access-Control-Request-Headers");
@@ -324,6 +331,22 @@ class GatewayRoutingIntegrationTest {
 
         assertEquals("probe-123", response.headers().firstValue(CORRELATION_HEADER).orElse(null));
         assertEquals(List.of("probe-123"), RECEIVED_CORRELATION_IDS);
+    }
+
+    /**
+     * El gateway pone la cabecera antes del proxy y el proxy <em>añade</em> la del servicio, que la
+     * devuelve también: salía dos veces, y en el navegador {@code headers.get()} une los dos valores
+     * en uno solo, {@code "probe-123, probe-123"}, que deja de servir como referencia.
+     */
+    @Test
+    void theCorrelationIdComesBackOnceAlthoughTheServiceEchoesIt() throws Exception {
+        HttpResponse<String> response = CLIENT.send(
+                HttpRequest.newBuilder(gatewayUri("/api/stock/actuator/health"))
+                        .header(CORRELATION_HEADER, "probe-123")
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(List.of("probe-123"), response.headers().allValues(CORRELATION_HEADER));
     }
 
     @Test
