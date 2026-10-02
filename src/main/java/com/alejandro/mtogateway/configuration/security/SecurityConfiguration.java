@@ -1,10 +1,13 @@
 package com.alejandro.mtogateway.configuration.security;
 
 import com.alejandro.mtogateway.filter.CorrelationIdProperties;
+import com.alejandro.mtogateway.filter.RemoveCorsRequestHeadersFilter;
+import com.alejandro.mtogateway.filter.RemoveCorsResponseHeadersFilter;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.security.oauth2.server.resource.autoconfigure.OAuth2ResourceServerProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -134,7 +137,9 @@ public class SecurityConfiguration {
      * El gateway en su sabor servlet no trae CORS propio: sus rutas son {@code RouterFunction} de
      * Spring MVC, así que lo que aplica es el CORS de Spring Web de siempre. Este bean lo recoge
      * {@code http.cors(...)} de arriba, de modo que hay un único sitio donde está escrita la
-     * política.
+     * política. Y es la única del dominio: los servicios no tienen CORS propio, y
+     * {@link RemoveCorsRequestHeadersFilter} y {@link RemoveCorsResponseHeadersFilter} impiden que
+     * intervenga el de un servicio que lo trajera.
      *
      * <p>La cabecera de correlación se añade aquí a las dos listas en lugar de enumerarse en el
      * YAML. El gateway <em>pone</em> esa cabecera en cada respuesta, así que tiene que aceptarla y
@@ -143,6 +148,10 @@ public class SecurityConfiguration {
      * y cambiar {@code app.correlation.header-name} dejaba al navegador sin poder leerla — sin
      * exponerla, el identificador es inútil justo para quien tiene que pegarlo en un informe de
      * error.</p>
+     *
+     * <p>{@code Retry-After} se expone por lo mismo: la pone el 503 del propio gateway
+     * ({@code FallbackController}), y sin exponerla el JavaScript de otro origen la ve llegar y no
+     * puede leer cuándo reintentar. Expuesta, vale también para los 429 y 503 de los servicios.</p>
      */
     @Bean
     public CorsConfigurationSource corsConfigurationSource(CorrelationIdProperties correlationProperties) {
@@ -152,8 +161,9 @@ public class SecurityConfiguration {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(corsProperties.allowedOrigins());
         configuration.setAllowedMethods(corsProperties.allowedMethods());
-        configuration.setAllowedHeaders(withHeader(corsProperties.allowedHeaders(), correlationHeader));
-        configuration.setExposedHeaders(withHeader(corsProperties.exposedHeaders(), correlationHeader));
+        configuration.setAllowedHeaders(withHeaders(corsProperties.allowedHeaders(), correlationHeader));
+        configuration.setExposedHeaders(withHeaders(corsProperties.exposedHeaders(),
+                correlationHeader, HttpHeaders.RETRY_AFTER));
         configuration.setAllowCredentials(corsProperties.allowCredentials());
         configuration.setMaxAge(corsProperties.maxAge());
 
@@ -163,23 +173,26 @@ public class SecurityConfiguration {
     }
 
     /**
-     * Añade la cabecera a la lista si no está ya, comparando sin distinguir mayúsculas porque los
-     * nombres de cabecera no las distinguen y {@code x-correlation-id} escrito en el YAML no debe
-     * producir una entrada duplicada.
+     * Añade a la lista cada cabecera que no esté ya, comparando sin distinguir mayúsculas porque
+     * los nombres de cabecera no las distinguen y {@code x-correlation-id} escrito en el YAML no
+     * debe producir una entrada duplicada.
      *
      * <p>Con el comodín no se toca nada: {@code "*"} ya lo cubre todo, y añadir un nombre concreto
      * al lado convertiría la lista en una enumeración parcial que no es lo que se pidió.</p>
      */
-    private static List<String> withHeader(List<String> configured, String header) {
+    private static List<String> withHeaders(List<String> configured, String... required) {
         List<String> headers = (configured != null) ? configured : List.of();
 
-        if (headers.contains(CorsConfiguration.ALL)
-                || headers.stream().anyMatch(header::equalsIgnoreCase)) {
+        if (headers.contains(CorsConfiguration.ALL)) {
             return headers;
         }
 
         List<String> merged = new ArrayList<>(headers);
-        merged.add(header);
+        for (String header : required) {
+            if (merged.stream().noneMatch(header::equalsIgnoreCase)) {
+                merged.add(header);
+            }
+        }
         return merged;
     }
 

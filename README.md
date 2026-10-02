@@ -259,6 +259,11 @@ que permite seguir una petición desde el navegador hasta `mto-stock` y volver.
   colar una cabecera entera contra el servicio de destino.
 - Un valor inválido **se sustituye, no se rechaza**. Devolver un 400 convertiría una cabecera de
   traza —opcional y meramente informativa— en un motivo para tirar la petición.
+- La respuesta la lleva **una sola vez**. `mto-configuration`, `mto-users` y `mto-notification` la
+  devuelven también, y el proxy añade las cabeceras del servicio a las que el gateway ya puso: salía
+  dos veces, y en el navegador `headers.get()` une los valores en uno (`"id, id"`).
+  `RemoveCorrelationResponseHeaderFilter` quita la del servicio, que es el mismo valor: los tres
+  aplican estas mismas reglas y el gateway solo les reenvía un identificador que las cumple.
 
 Va implementado como filtro de servlet (`CorrelationIdFilter`) y no como filtro de ruta: el gateway
 en su sabor servlet no tiene `default-filters`, así que un filtro de ruta habría que repetirlo en
@@ -353,16 +358,41 @@ aplican y falla si alguno nombra un cliente o un rol que todavía no existe.
 
 ## CORS
 
-El gateway en su sabor servlet **no trae CORS propio**: sus rutas son `RouterFunction` de Spring MVC,
-así que lo que aplica es el CORS de Spring Web de siempre, mediante un `CorsConfigurationSource` que
-recoge `http.cors(...)`. La política se configura en `app.security.cors`, con el mismo esquema que en
-los otros dos repositorios.
+El gateway es la **única autoridad CORS** que ve el navegador. En su sabor servlet no trae CORS
+propio: sus rutas son `RouterFunction` de Spring MVC, así que lo que aplica es el CORS de Spring Web
+de siempre, mediante un `CorsConfigurationSource` que recoge `http.cors(...)`. La política se
+configura en `app.security.cors`.
 
-La cabecera de correlación **no se enumera** en `allowed-headers` ni en `exposed-headers`: la añade
-`SecurityConfiguration` leyendo `app.correlation.header-name`, de modo que su nombre vive en un solo
-sitio. El gateway *pone* esa cabecera en cada respuesta, así que tiene que aceptarla y exponerla sea
-cual sea su nombre — y sin exponerla, el navegador la ve llegar y no deja leerla desde JavaScript,
-justo a quien tiene que pegarla en un informe de error.
+El gateway contesta el *preflight* sin reenviarlo, pone el `Access-Control-Allow-Origin` y rechaza
+con un 403 el origen que no está en la lista antes de gastar una llamada contra un servicio. Lo que
+deja pasar cruza el proxy **sin nada de CORS**, en los dos sentidos:
+
+- **Hacia el servicio** se quitan `Origin` y las `Access-Control-*` (`RemoveCorsRequestHeadersFilter`).
+  Los servicios ya no tienen CORS propio, pero lo tuvieron, registrado en `/**` y solo con el 4200.
+  Mientras el gateway reenviaba `Origin`, ese CORS se volvía a aplicar: una llamada desde el 5173,
+  que el gateway admite, acababa en el 403 del servicio, y una desde el 4200 volvía con dos
+  `Access-Control-Allow-Origin`, que el navegador rechaza. Sin `Origin`, un servicio que traiga su
+  propio CORS (uno nuevo, otra pila) no ve una petición CORS y no hace nada.
+- **De vuelta** se quitan las `Access-Control-*` que traiga la respuesta y, de `Vary`, lo que nombra
+  una cabecera de petición CORS (`RemoveCorsResponseHeadersFilter`). El `CorsFilter` del gateway
+  escribe sus cabeceras antes de que exista la respuesta del servicio y el proxy *añade* las de
+  este, así que cualquier `Access-Control-Allow-Origin` del servicio sería el segundo. Ninguno de
+  los del dominio lo pone; esto cubre al que lo pusiera igualmente.
+
+Los dos son beans `HttpHeadersFilter`, que el proxy aplica a todas las rutas: como la correlación,
+no hay que declarar nada al añadir un servicio. Lo que contesta el propio gateway (su Actuator, los
+401 y 403 de la cadena de seguridad, el 503 del fallback) no pasa por el proxy y solo lleva su CORS.
+Un cliente que llame por su mismo origen a través de un proxy que quite `Origin`, como
+`mto-frontend`, no hace CORS con el gateway y no necesita estar en la lista.
+
+La cabecera de correlación y `Retry-After` **no se enumeran** en el YAML: las añade
+`SecurityConfiguration`, la primera a `allowed-headers` y `exposed-headers` leyendo
+`app.correlation.header-name`, de modo que su nombre vive en un solo sitio, y la segunda a
+`exposed-headers`. El gateway *pone* las dos —la correlación en cada respuesta, `Retry-After` en el
+503 del fallback—, así que tiene que exponerlas sea cual sea la configuración: sin exponerlas, el
+navegador las ve llegar y no deja leerlas desde JavaScript, justo a quien tiene que pegar la
+referencia en un informe de error o saber cuándo reintentar. Expuesta, `Retry-After` vale también
+para los 429 y 503 de los servicios.
 
 `allowed-origins` **no admite el comodín** y la aplicación no arranca si se pone: con
 `allow-credentials` activo Spring lo rechaza en tiempo de ejecución, de modo que un `"*"` puesto para
@@ -378,10 +408,11 @@ consola del navegador, lejos de quien escribió la configuración.
   gateway es un `RestClient` sobre el `ClientHttpRequestFactory` de Boot, así que es ahí y no bajo
   `spring.cloud.gateway` donde se ajustan.
 - Cada ruta de API lleva un `CircuitBreaker` de Resilience4j con su `fallbackUri`. Con el circuito
-  abierto, la respuesta es un **503** con `Retry-After` y un cuerpo `application/problem+json` que
-  dice qué servicio concreto no está disponible, en vez de un 500 con la traza del proxy dentro.
-  Las rutas de Actuator **no** llevan circuit breaker: son la sonda con la que se comprueba si el
-  servicio está vivo, y taparla con un fallback es quedarse sin la única respuesta útil.
+  abierto, la respuesta es un **503** con `Retry-After` (expuesta por [CORS](#cors)) y un cuerpo
+  `application/problem+json` que dice qué servicio concreto no está disponible, en vez de un 500 con
+  la traza del proxy dentro. Las rutas de Actuator **no** llevan circuit breaker: son la sonda con
+  la que se comprueba si el servicio está vivo, y taparla con un fallback es quedarse sin la única
+  respuesta útil.
 - El `Retry-After` de ese 503 **se lee de la configuración real del circuito**
   (`wait-duration-in-open-state`), no va escrito en el código: es el tiempo que va a tardar en dejar
   pasar la primera llamada de prueba, así que reintentar antes solo suma peticiones rechazadas.
@@ -559,7 +590,10 @@ src/main/java/com/alejandro/mtogateway/
 │   └── GatewayAuthenticationErrorHandler.java  401 y 403 como problem+json
 ├── filter/
 │   ├── CorrelationIdFilter.java                X-Correlation-Id
-│   └── CorrelationIdProperties.java            app.correlation
+│   ├── CorrelationIdProperties.java            app.correlation
+│   ├── RemoveCorrelationResponseHeaderFilter.java sin la correlación del servicio de vuelta
+│   ├── RemoveCorsRequestHeadersFilter.java     sin Origin ni Access-Control-* hacia el servicio
+│   └── RemoveCorsResponseHeadersFilter.java    sin Access-Control-* ni su Vary de vuelta
 └── controller/
     └── FallbackController.java                 503 cuando el circuito está abierto
 
@@ -573,7 +607,8 @@ src/main/resources/
 
 src/test/java/com/alejandro/mtogateway/
 ├── MtoGatewayApplicationTests.java             arranque sin base de datos, rutas enlazadas
-├── CorrelationIdFilterTest.java                el filtro, sin contexto de Spring
+├── CorrelationIdFilterTest.java                los filtros de la correlación, sin contexto de Spring
+├── CorsHeadersFiltersTest.java                 los filtros de cabeceras CORS, sin contexto de Spring
 ├── GatewayRoutingIntegrationTest.java          enrutado, correlación, seguridad y CORS de verdad
 ├── GatewayTracingIntegrationTest.java          la traza nace y se propaga una sola vez
 ├── GatewayCorsHeaderNameTest.java              CORS sigue a app.correlation.header-name

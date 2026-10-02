@@ -1,5 +1,6 @@
 package com.alejandro.mtogateway;
 
+import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
@@ -22,7 +23,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -52,9 +55,17 @@ class GatewayRoutingIntegrationTest {
 
     private static final String CORRELATION_HEADER = "X-Correlation-Id";
 
+    /**
+     * El único origen que admitía el CORS propio de cada servicio mientras lo tuvieron. El gateway
+     * admite además el 5173, y esa diferencia es la que destapaba el CORS doble.
+     */
+    private static final String SERVICE_ALLOWED_ORIGIN = "http://localhost:4200";
+
     private static final List<String> RECEIVED_PATHS = new CopyOnWriteArrayList<>();
     private static final List<String> RECEIVED_CORRELATION_IDS = new CopyOnWriteArrayList<>();
     private static final List<String> RECEIVED_AUTHORIZATION = new CopyOnWriteArrayList<>();
+    /** Todos los valores y no el primero: la pregunta es si llega alguno. */
+    private static final List<String> RECEIVED_ORIGINS = new CopyOnWriteArrayList<>();
 
     private static final HttpServer DOWNSTREAM = startDownstream();
 
@@ -82,14 +93,47 @@ class GatewayRoutingIntegrationTest {
         }
     }
 
+    /**
+     * Contesta como un servicio con su propio CORS registrado en {@code /**}, como lo tuvieron todos
+     * y como lo traería uno nuevo: el {@code CorsFilter} de Spring pone los tres {@code Vary} en cada
+     * respuesta, añade su {@code Access-Control-Allow-Origin} cuando le llega un {@code Origin} que
+     * admite y contesta 403 cuando le llega uno que no. Sin imitarlo, los tests del CORS doble
+     * pasarían también con el gateway reenviando {@code Origin}.
+     *
+     * <p>Y devuelve la cabecera de correlación que recibe, como mto-configuration, mto-users y
+     * mto-notification.</p>
+     */
     private static void record(HttpExchange exchange) throws IOException {
         RECEIVED_PATHS.add(exchange.getRequestURI().toString());
         RECEIVED_CORRELATION_IDS.add(exchange.getRequestHeaders().getFirst(CORRELATION_HEADER));
         RECEIVED_AUTHORIZATION.add(exchange.getRequestHeaders().getFirst("Authorization"));
+        RECEIVED_ORIGINS.addAll(exchange.getRequestHeaders().getOrDefault("Origin", List.of()));
 
-        byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().add("Content-Type", "application/json");
-        exchange.sendResponseHeaders(200, body.length);
+        Headers responseHeaders = exchange.getResponseHeaders();
+        String correlationId = exchange.getRequestHeaders().getFirst(CORRELATION_HEADER);
+        if (correlationId != null) {
+            responseHeaders.add(CORRELATION_HEADER, correlationId);
+        }
+        responseHeaders.add("Vary", "Origin");
+        responseHeaders.add("Vary", "Access-Control-Request-Method");
+        responseHeaders.add("Vary", "Access-Control-Request-Headers");
+
+        String origin = exchange.getRequestHeaders().getFirst("Origin");
+        if (origin != null && !SERVICE_ALLOWED_ORIGIN.equals(origin)) {
+            respond(exchange, 403, "text/plain", "Invalid CORS request");
+            return;
+        }
+        if (origin != null) {
+            responseHeaders.add("Access-Control-Allow-Origin", origin);
+        }
+        respond(exchange, 200, "application/json", "{\"ok\":true}");
+    }
+
+    private static void respond(HttpExchange exchange, int status, String contentType, String content)
+            throws IOException {
+        byte[] body = content.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", contentType);
+        exchange.sendResponseHeaders(status, body.length);
         try (var out = exchange.getResponseBody()) {
             out.write(body);
         }
@@ -127,6 +171,7 @@ class GatewayRoutingIntegrationTest {
         RECEIVED_PATHS.clear();
         RECEIVED_CORRELATION_IDS.clear();
         RECEIVED_AUTHORIZATION.clear();
+        RECEIVED_ORIGINS.clear();
 
         Jwt jwt = Jwt.withTokenValue("stub-token")
                 .header("alg", "RS256")
@@ -288,6 +333,22 @@ class GatewayRoutingIntegrationTest {
         assertEquals(List.of("probe-123"), RECEIVED_CORRELATION_IDS);
     }
 
+    /**
+     * El gateway pone la cabecera antes del proxy y el proxy <em>añade</em> la del servicio, que la
+     * devuelve también: salía dos veces, y en el navegador {@code headers.get()} une los dos valores
+     * en uno solo, {@code "probe-123, probe-123"}, que deja de servir como referencia.
+     */
+    @Test
+    void theCorrelationIdComesBackOnceAlthoughTheServiceEchoesIt() throws Exception {
+        HttpResponse<String> response = CLIENT.send(
+                HttpRequest.newBuilder(gatewayUri("/api/stock/actuator/health"))
+                        .header(CORRELATION_HEADER, "probe-123")
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(List.of("probe-123"), response.headers().allValues(CORRELATION_HEADER));
+    }
+
     @Test
     void anInboundCorrelationIdThatIsNotSafeIsReplacedBeforeItLeavesTheGateway() throws Exception {
         HttpResponse<String> response = CLIENT.send(
@@ -392,6 +453,58 @@ class GatewayRoutingIntegrationTest {
                         .orElse("").contains(CORRELATION_HEADER));
     }
 
+    /**
+     * El 5173 está en la lista del gateway y no en la del servicio. Mientras el gateway reenviaba
+     * {@code Origin}, el servicio aplicaba su propio CORS y contestaba 403 a una llamada que el
+     * gateway ya había aceptado. Quien decide es el gateway, y lo que deja pasar llega al servicio
+     * sin nada que active el CORS de este.
+     */
+    @Test
+    void aCallFromAnOriginTheGatewayAllowsReachesTheServiceWithoutOrigin() throws Exception {
+        HttpResponse<String> response = authenticatedFrom("http://localhost:5173", "/api/stock/materials");
+
+        assertEquals(200, response.statusCode());
+        assertEquals(List.of("/api/v1/inventory/materials"), RECEIVED_PATHS);
+        assertEquals(List.of(), RECEIVED_ORIGINS, "Origin no sale del gateway");
+        assertEquals(List.of("http://localhost:5173"),
+                response.headers().allValues("Access-Control-Allow-Origin"));
+    }
+
+    /**
+     * Con un origen que admiten los dos, el gateway ponía su {@code Access-Control-Allow-Origin}
+     * antes del proxy y el proxy añadía el del servicio: el navegador rechaza una respuesta que trae
+     * dos.
+     */
+    @Test
+    void theBrowserGetsASingleAllowOriginHeader() throws Exception {
+        HttpResponse<String> response = authenticatedFrom(SERVICE_ALLOWED_ORIGIN, "/api/stock/materials");
+
+        assertEquals(200, response.statusCode());
+        assertEquals(List.of(SERVICE_ALLOWED_ORIGIN), response.headers().allValues("Access-Control-Allow-Origin"));
+    }
+
+    /**
+     * El {@code Vary} que pone el CORS de Spring en cada respuesta también salía dos veces. Repetido
+     * es inocuo, pero un servicio no puede variar por una cabecera que ya no le llega: el que vale es
+     * el del gateway.
+     */
+    @Test
+    void theCorsVaryOfTheServiceIsNotRepeated() throws Exception {
+        HttpResponse<String> response = authenticatedFrom(SERVICE_ALLOWED_ORIGIN, "/api/stock/materials");
+
+        List<String> vary = varyTokens(response);
+        assertTrue(vary.contains("origin"), "El del gateway se queda: " + vary);
+        assertEquals(vary.stream().distinct().toList(), vary, "Sin repetidos: " + vary);
+    }
+
+    @Test
+    void aCallFromAnOriginTheGatewayDoesNotAllowNeverReachesTheService() throws Exception {
+        HttpResponse<String> response = authenticatedFrom("http://evil.example", "/api/stock/materials");
+
+        assertEquals(403, response.statusCode());
+        assertTrue(RECEIVED_PATHS.isEmpty(), "Lo rechaza el gateway, no el servicio");
+    }
+
     // ------------------------------------------------------------------ utilidades
 
     private URI gatewayUri(String path) {
@@ -409,5 +522,24 @@ class GatewayRoutingIntegrationTest {
                         .header("Authorization", "Bearer stub-token")
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** Una llamada de navegador desde otro origen: la que no es un preflight. */
+    private HttpResponse<String> authenticatedFrom(String origin, String path) throws Exception {
+        return CLIENT.send(
+                HttpRequest.newBuilder(gatewayUri(path))
+                        .header("Authorization", "Bearer stub-token")
+                        .header("Origin", origin)
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** Los valores de {@code Vary}, vengan en líneas separadas o unidos por comas, en minúsculas. */
+    private static List<String> varyTokens(HttpResponse<?> response) {
+        return response.headers().allValues("Vary").stream()
+                .flatMap(value -> Arrays.stream(value.split(",")))
+                .map(token -> token.trim().toLowerCase(Locale.ROOT))
+                .filter(token -> !token.isEmpty())
+                .toList();
     }
 }

@@ -319,6 +319,9 @@ app:
     audience-validation-enabled: ${KEYCLOAK_AUDIENCE_VALIDATION_ENABLED:false}
     required-audience: ${KEYCLOAK_AUDIENCE:}
     cors:
+      # La unica politica CORS del dominio: los servicios no tienen CORS propio, y el gateway quita
+      # Origin antes de llamarlos y las Access-Control-* de lo que contestan (README, "CORS").
+      #
       # Sin comodin: la lista se enumera por entorno. Con allow-credentials activo Spring ademas
       # rechaza '*' en tiempo de ejecucion, asi que ponerlo para salir del paso rompe cada preflight
       # en vez de aflojar la politica.
@@ -329,7 +332,8 @@ app:
       # solo sitio. Antes estaba escrito aqui a mano y cambiar la property dejaba al navegador sin
       # poder leerla, sin que nada avisara.
       allowed-headers: Authorization,Content-Type,Accept,X-Requested-With
-      # El navegador solo deja leer al JavaScript las cabeceras que se expongan aqui.
+      # El navegador solo deja leer al JavaScript las cabeceras que se expongan aqui. Retry-After
+      # tampoco se enumera: la pone el 503 del propio gateway y la anade SecurityConfiguration.
       exposed-headers: Location,Content-Disposition
       # La API es stateless y se autentica con la cabecera Authorization: no hay cookies que enviar
       # y activarlo solo ampliaria la superficie.
