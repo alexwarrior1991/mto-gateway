@@ -19,6 +19,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Instant;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -100,6 +101,26 @@ class GatewayFallbackIntegrationTest {
 
         String correlationId = response.headers().firstValue("X-Correlation-Id").orElseThrow();
         assertTrue(response.body().contains(correlationId));
+    }
+
+    /**
+     * Para un navegador en otro origen, un {@code Retry-After} sin exponer llega y no se puede leer
+     * desde JavaScript. El 503 lo contesta el propio gateway (un {@code forward}, no el proxy), así
+     * que lleva un solo {@code Access-Control-Allow-Origin}: el suyo.
+     */
+    @Test
+    void aBrowserOnAnotherOriginCanReadTheRetryAfterOfThe503() throws Exception {
+        HttpResponse<String> response = CLIENT.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + gatewayPort + "/api/stock/materials"))
+                        .header("Authorization", "Bearer stub-token")
+                        .header("Origin", "http://localhost:4200")
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(503, response.statusCode());
+        assertEquals(List.of("http://localhost:4200"), response.headers().allValues("Access-Control-Allow-Origin"));
+        String exposed = String.join(",", response.headers().allValues("Access-Control-Expose-Headers"));
+        assertTrue(exposed.contains("Retry-After"), "Expuestas: " + exposed);
     }
 
     /**
