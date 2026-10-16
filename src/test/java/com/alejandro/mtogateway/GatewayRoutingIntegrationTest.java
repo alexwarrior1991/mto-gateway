@@ -147,6 +147,7 @@ class GatewayRoutingIntegrationTest {
         registry.add("app.services.maintenance.url", () -> uri);
         registry.add("app.services.users.url", () -> uri);
         registry.add("app.services.notification.url", () -> uri);
+        registry.add("app.services.resources.url", () -> uri);
     }
 
     @AfterAll
@@ -282,6 +283,22 @@ class GatewayRoutingIntegrationTest {
     @Test
     void theNotificationsActuatorRouteWinsOverItsApiRoute() throws Exception {
         HttpResponse<String> response = anonymous("/api/notifications/actuator/health");
+
+        assertEquals(200, response.statusCode(), "La sonda de salud no exige token");
+        assertEquals(List.of("/actuator/health"), RECEIVED_PATHS);
+    }
+
+    @Test
+    void theResourcesPrefixIsRewrittenToTheVersionedInternalPath() throws Exception {
+        HttpResponse<String> response = authenticated("/api/resources/vehicles/positions?executionPackageId=14");
+
+        assertEquals(200, response.statusCode());
+        assertEquals(List.of("/api/v1/resources/vehicles/positions?executionPackageId=14"), RECEIVED_PATHS);
+    }
+
+    @Test
+    void theResourcesActuatorRouteWinsOverItsApiRoute() throws Exception {
+        HttpResponse<String> response = anonymous("/api/resources/actuator/health");
 
         assertEquals(200, response.statusCode(), "La sonda de salud no exige token");
         assertEquals(List.of("/actuator/health"), RECEIVED_PATHS);

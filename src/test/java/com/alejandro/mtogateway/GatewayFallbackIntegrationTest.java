@@ -62,6 +62,7 @@ class GatewayFallbackIntegrationTest {
         registry.add("app.services.configuration.url", () -> dead);
         registry.add("app.services.users.url", () -> dead);
         registry.add("app.services.notification.url", () -> dead);
+        registry.add("app.services.resources.url", () -> dead);
     }
 
     @MockitoBean
@@ -140,6 +141,7 @@ class GatewayFallbackIntegrationTest {
         assertTrue(call("/api/configuration/profiles").body().contains("mto-configuration"));
         assertTrue(call("/api/users/profiles").body().contains("mto-users"));
         assertTrue(call("/api/notifications/inbox").body().contains("mto-notification"));
+        assertTrue(call("/api/resources/vehicles").body().contains("mto-resources"));
     }
 
     /**

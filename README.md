@@ -22,6 +22,7 @@ Servicios detrás:
 | [`mto-maintenance`](../mto-maintenance) | Mantenimiento de catenaria: activos, órdenes preventivas y correctivas, turnos, inspecciones, defectos, materiales e informes. |
 | [`mto-users`](../mto-users) | Administración de usuarios, roles y perfiles del realm sobre la Admin API de Keycloak. |
 | [`mto-notification`](../mto-notification) | Registro de actividad del dominio y notificaciones: la bandeja de cada persona, el registro, los accesos y su administración. |
+| [`mto-resources`](../mto-resources) | Personal, organización y flota: las personas y su jerarquía (jefe de equipo, supervisor, jefe de supervisores, jefe de mantenimiento, jefe de proyecto), los equipos con sus linemen y los vehículos de vía, de carretera y biviales con su ubicación. |
 
 ---
 
@@ -39,6 +40,8 @@ Servicios detrás:
 | `/api/users/**` | `MTO_USERS_URL` | `/api/v1/users/**` | `mtoUsers` |
 | `/api/notifications/actuator/**` | `MTO_NOTIFICATION_URL` | `/actuator/**` | no |
 | `/api/notifications/**` | `MTO_NOTIFICATION_URL` | `/api/v1/notifications/**` | `mtoNotification` |
+| `/api/resources/actuator/**` | `MTO_RESOURCES_URL` | `/actuator/**` | no |
+| `/api/resources/**` | `MTO_RESOURCES_URL` | `/api/v1/resources/**` | `mtoResources` |
 | `/actuator/**` | *el propio gateway* | — | — |
 
 Tres detalles que evitan sorpresas:
@@ -83,7 +86,7 @@ timeouts son globales y no saben qué rutas existen.
    app:
      services:
        signalling:
-         url: ${MTO_SIGNALLING_URL:http://localhost:8087}
+         url: ${MTO_SIGNALLING_URL:http://localhost:8091}
    ```
 
 2. Añade sus dos rutas: la de Actuator con un `order` bajo y la de la API con uno alto.
@@ -91,14 +94,14 @@ timeouts son globales y no saben qué rutas existen.
    ```yaml
    - id: mto-signalling-actuator
      uri: ${app.services.signalling.url}
-     order: 5
+     order: 6
      predicates: [ Path=/api/signalling/actuator/** ]
      filters:
        - RewritePath=/api/signalling/actuator(?<segment>.*), /actuator$\{segment}
 
    - id: mto-signalling-api
      uri: ${app.services.signalling.url}
-     order: 15
+     order: 16
      predicates: [ Path=/api/signalling/** ]
      filters:
        - RewritePath=/api/signalling(?<segment>.*), /api/v1/signalling$\{segment}
@@ -117,8 +120,10 @@ timeouts son globales y no saben qué rutas existen.
 3. Declara su instancia en `resilience4j.circuitbreaker.instances`, añade `MTO_SIGNALLING_URL` a
    `.env.example`, a `compose.yaml`, a `application-docker.yaml` y a la tabla de este README, y añade
    un caso a `GatewayRoutingIntegrationTest`, otro a `GatewayFallbackIntegrationTest` y la ruta a la
-   lista de `MtoGatewayApplicationTests`. El último que entró por aquí fue `mto-notification`
-   (`/api/notifications/**` → `/api/v1/notifications/**`, circuito `mtoNotification`, puerto 8086).
+   lista de `MtoGatewayApplicationTests`. El último que entró por aquí fue `mto-resources`
+   (`/api/resources/**` → `/api/v1/resources/**`, circuito `mtoResources`, puerto 8089). El ejemplo
+   usa el 8091 porque del 8080 al 8090 ya están ocupados (`mto-field` y su segunda réplica son el
+   8087 y el 8088, y el gateway el 8090).
 
 Las sondas de salud del servicio nuevo quedan abiertas sin tocar nada: la regla de seguridad usa el
 comodín `/api/*/actuator/health`. Lo que sí se declara en `FallbackController.SERVICES` es su nombre
@@ -142,6 +147,7 @@ partir de una base.
 | `MTO_MAINTENANCE_URL` | `http://localhost:8083` | Destino de `/api/maintenance/**` |
 | `MTO_USERS_URL` | `http://localhost:8084` | Destino de `/api/users/**` |
 | `MTO_NOTIFICATION_URL` | `http://localhost:8086` | Destino de `/api/notifications/**` |
+| `MTO_RESOURCES_URL` | `http://localhost:8089` | Destino de `/api/resources/**` |
 | `GATEWAY_CONNECT_TIMEOUT` | `2s` | Abrir el socket contra el servicio |
 | `GATEWAY_READ_TIMEOUT` | `15s` | Tiempo máximo sin recibir bytes |
 | `GATEWAY_CIRCUIT_BREAKER_TIMEOUT` | `20s` | Red de seguridad de Resilience4j |
@@ -159,7 +165,8 @@ partir de una base.
 
 > **Aviso sobre puertos.** En local, `mto-stock` escucha en el **8080**, `mto-configuration` en el
 > **8081**, Keycloak en el **8082**, `mto-maintenance` en el **8083**, `mto-users` en el **8084**, el backoffice en el
-> **8085** y `mto-notification` en el **8086**. Por eso el gateway usa el 8090 y `MTO_STOCK_URL` apunta al
+> **8085**, `mto-notification` en el **8086**, `mto-field` en el **8087** y el **8088** (Actuator; no pasa por el gateway) y
+> `mto-resources` en el **8089**. Por eso el gateway usa el 8090 y `MTO_STOCK_URL` apunta al
 > 8080. Un gateway apuntando al 8082 arrancaría sin quejarse y devolvería 404 del proveedor de
 > identidad, que se parecen mucho a un fallo de enrutado.
 
@@ -229,6 +236,7 @@ curl -i http://localhost:8090/api/stock/actuator/health
 curl -i http://localhost:8090/api/maintenance/actuator/health
 curl -i http://localhost:8090/api/users/actuator/health
 curl -i http://localhost:8090/api/notifications/actuator/health
+curl -i http://localhost:8090/api/resources/actuator/health
 
 # Una llamada de negocio. Sin token, 401 del gateway.
 curl -i http://localhost:8090/api/stock/materials
@@ -304,7 +312,7 @@ otros dos servicios. Son roles **de cliente**, así que hay que declararlos en e
 ### Por qué la audiencia no se valida aquí
 
 Las audiencias son **por servicio**: `mto-configuration` exige `aud ⊇ {mto-configuration-api}` y
-`mto-stock` exige `aud ⊇ {mto-stock-api}`, `mto-maintenance` exige `aud ⊇ {mto-maintenance-api}`, `mto-users` exige `aud ⊇ {mto-users-api}` y `mto-notification` exige `aud ⊇ {mto-notification-api}`. Ningún token que circula hoy lleva una audiencia del
+`mto-stock` exige `aud ⊇ {mto-stock-api}`, `mto-maintenance` exige `aud ⊇ {mto-maintenance-api}`, `mto-users` exige `aud ⊇ {mto-users-api}`, `mto-notification` exige `aud ⊇ {mto-notification-api}` y `mto-resources` exige `aud ⊇ {mto-resources-api}`. Ningún token que circula hoy lleva una audiencia del
 gateway. Si el gateway exigiera la suya, rechazaría tokens que los servicios sí aceptan; y si además
 dejara pasar uno sin la audiencia del destino, el 401 llegaría **después** del gateway, que es el
 fallo más confuso posible.
@@ -566,6 +574,7 @@ docker run -d --name mto-gateway -p 8090:8090 \
   -e MTO_MAINTENANCE_URL=http://mto-maintenance-app:8080 \
   -e MTO_USERS_URL=http://mto-users-app:8080 \
   -e MTO_NOTIFICATION_URL=http://mto-notification-app:8080 \
+  -e MTO_RESOURCES_URL=http://mto-resources-app:8080 \
   -e KEYCLOAK_ISSUER_URI=https://auth.example.com/realms/mto \
   -e APP_CORS_ALLOWED_ORIGINS=https://mto.example.com \
   ghcr.io/<owner>/mto-gateway@sha256:<digest>
