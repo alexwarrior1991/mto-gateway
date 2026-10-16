@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.micrometer.metrics.autoconfigure.export.prometheus.PrometheusScrapeEndpoint;
 import org.springframework.boot.micrometer.metrics.test.autoconfigure.AutoConfigureMetrics;
+import org.springframework.cloud.circuitbreaker.resilience4j.Resilience4JCircuitBreakerFactory;
 import org.springframework.cloud.gateway.server.mvc.config.GatewayMvcProperties;
 import org.springframework.cloud.gateway.server.mvc.config.RouteProperties;
 import org.springframework.context.ApplicationContext;
@@ -34,6 +35,19 @@ class MtoGatewayApplicationTests {
     @Test
     void contextLoads() {
         assertNotNull(context.getBean(CorrelationIdFilter.class));
+    }
+
+    /**
+     * El circuito de las rutas de la API llama al servicio en un hilo virtual: la configuración que
+     * cambia su executor llega de verdad a la fábrica que usan las rutas. Sin ella, cada llamada
+     * proxificada esperaría en un hilo de plataforma aunque los hilos virtuales estén activos.
+     */
+    @Test
+    void theCircuitBreakerOfTheRoutesCallsOnAVirtualThread() {
+        Thread thread = context.getBean(Resilience4JCircuitBreakerFactory.class).create("mtoStock").run(Thread::currentThread);
+
+        assertTrue(thread.isVirtual(), thread.getName());
+        assertTrue(thread.getName().startsWith("circuit-breaker-"), thread.getName());
     }
 
     /**
