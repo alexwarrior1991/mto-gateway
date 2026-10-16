@@ -155,7 +155,7 @@ partir de una base.
 | `MTO_TRACING_ENABLED` | `true` | Trazado distribuido |
 | `MTO_TRACING_SAMPLING_PROBABILITY` | `0.1` | Fracción de trazas muestreadas |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `http://localhost:4318/v1/traces` | Colector OTLP |
-| `SPRING_THREADS_VIRTUAL_ENABLED` | `true` | Hilos virtuales para el proxy bloqueante |
+| `SPRING_THREADS_VIRTUAL_ENABLED` | `true` | Hilos virtuales para el proxy bloqueante, también en el circuito |
 
 > **Aviso sobre puertos.** En local, `mto-stock` escucha en el **8080**, `mto-configuration` en el
 > **8081**, Keycloak en el **8082**, `mto-maintenance` en el **8083**, `mto-users` en el **8084**, el backoffice en el
@@ -420,6 +420,12 @@ consola del navegador, lejos de quien escribió la configuración.
   HTTP y el error que se registra es el real del servicio, no una cancelación genérica. **Ojo:** el
   valor por defecto del `TimeLimiter` de Spring Cloud CircuitBreaker es de **1 segundo**, y sin
   sobreescribirlo cualquier consulta que pase de un segundo acabaría en el fallback.
+- Con el `TimeLimiter`, el circuito no llama al servicio en el hilo de la petición: la manda a su
+  propio executor y espera el resultado. Ese executor es por defecto un pool de **hilos de
+  plataforma** que `spring.threads.virtual.enabled` no toca, así que cada llamada a la API seguía
+  esperando a su servicio en un hilo del sistema operativo. `CircuitBreakerExecutorConfiguration` lo
+  cambia por un hilo virtual por llamada (`circuit-breaker-N` en los logs), solo con los hilos
+  virtuales activos. El `TimeLimiter` no cambia.
 
 > **Streaming.** `read-timeout` es un tiempo máximo *sin recibir bytes*, no un presupuesto total de
 > la petición. Un SSE o un *long-poll* que se quede callado más de ese tiempo se corta por la mitad.
@@ -581,6 +587,7 @@ público desde *Packages* en GitHub.
 ```
 src/main/java/com/alejandro/mtogateway/
 ├── MtoGatewayApplication.java
+├── configuration/CircuitBreakerExecutorConfiguration.java  el circuito en hilos virtuales
 ├── configuration/security/
 │   ├── SecurityConfiguration.java              cadena de filtros, CORS y JwtDecoder
 │   ├── SecurityProperties.java                 app.security (record @Validated)
@@ -612,5 +619,6 @@ src/test/java/com/alejandro/mtogateway/
 ├── GatewayRoutingIntegrationTest.java          enrutado, correlación, seguridad y CORS de verdad
 ├── GatewayTracingIntegrationTest.java          la traza nace y se propaga una sola vez
 ├── GatewayCorsHeaderNameTest.java              CORS sigue a app.correlation.header-name
-└── GatewayFallbackIntegrationTest.java         qué ve el cliente con el servicio caído
+├── GatewayFallbackIntegrationTest.java         qué ve el cliente con el servicio caído
+└── CircuitBreakerExecutorConfigurationTest.java el circuito llama en un hilo virtual
 ```
