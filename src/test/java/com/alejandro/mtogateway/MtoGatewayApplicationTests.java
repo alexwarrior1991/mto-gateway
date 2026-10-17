@@ -62,7 +62,7 @@ class MtoGatewayApplicationTests {
     }
 
     /**
-     * Comprobación barata que caza erratas en el YAML: los identificadores de las diez rutas y,
+     * Comprobación barata que caza erratas en el YAML: los identificadores de las doce rutas y,
      * sobre todo, que las de Actuator tienen un {@code order} menor que las de la API. Que el orden
      * además funcione de verdad lo prueba {@code GatewayRoutingIntegrationTest} contra un servicio
      * real.
@@ -73,12 +73,13 @@ class MtoGatewayApplicationTests {
 
         assertEquals(
                 List.of("mto-configuration-actuator", "mto-stock-actuator", "mto-maintenance-actuator", "mto-users-actuator",
-                        "mto-notification-actuator",
-                        "mto-configuration-api", "mto-stock-api", "mto-maintenance-api", "mto-users-api", "mto-notification-api"),
+                        "mto-notification-actuator", "mto-resources-actuator",
+                        "mto-configuration-api", "mto-stock-api", "mto-maintenance-api", "mto-users-api", "mto-notification-api",
+                        "mto-resources-api"),
                 routes.stream().map(RouteProperties::getId).toList());
 
-        int lastActuatorOrder = routes.subList(0, 5).stream().mapToInt(RouteProperties::getOrder).max().orElseThrow();
-        int firstApiOrder = routes.subList(5, 10).stream().mapToInt(RouteProperties::getOrder).min().orElseThrow();
+        int lastActuatorOrder = routes.subList(0, 6).stream().mapToInt(RouteProperties::getOrder).max().orElseThrow();
+        int firstApiOrder = routes.subList(6, 12).stream().mapToInt(RouteProperties::getOrder).min().orElseThrow();
         assertTrue(lastActuatorOrder < firstApiOrder,
                 "Las rutas de Actuator tienen que evaluarse antes que el comodín de la API");
     }
