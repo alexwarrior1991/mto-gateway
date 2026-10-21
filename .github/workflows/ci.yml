@@ -100,11 +100,14 @@ jobs:
       # Construir no prueba que el contenedor arranque. Esto lo comprueba de verdad: levanta la
       # imagen recien construida sin ningun servicio detras y espera a que /actuator/health
       # responda. El gateway tiene que arrancar sin base de datos, sin Keycloak y sin destinos.
+      #
+      # Corre con un UID cualquiera del grupo 0 (--user), como en OpenShift con la SCC restricted-v2:
+      # que arranque con el 1001 del Dockerfile no prueba que arranque con el que asigna el cluster.
       - name: Smoke test the image
         if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
         run: |
           IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
-          docker run -d --name mto-gateway-smoke -p 8090:8090 "$IMAGE"
+          docker run -d --name mto-gateway-smoke --user 1000680000:0 -p 8090:8090 "$IMAGE"
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:8090/actuator/health > /dev/null; then
               echo "El contenedor responde en /actuator/health"
