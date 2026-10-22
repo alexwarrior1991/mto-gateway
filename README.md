@@ -547,7 +547,9 @@ plataforma no usa baggage en ningún sitio, así que hacerlo aquí sería invent
   - En un PR la imagen no se publica: se carga en el demonio local del runner y se le pasa un
     **smoke test** que la arranca sin ningún servicio detrás y espera a que `/actuator/health`
     responda. Construir no prueba que el contenedor arranque; esto sí, y de paso comprueba que el
-    gateway levanta sin base de datos, sin Keycloak y sin destinos.
+    gateway levanta sin base de datos, sin Keycloak y sin destinos. Lo arranca con un UID cualquiera
+    del grupo 0 (`--user 1000680000:0`), como OpenShift con la SCC `restricted-v2`: la imagen corre
+    con el `USER 1001` numérico y `/app` es del grupo 0, así que funciona con cualquiera de los dos.
   - En `push` a `master` se publica en **GHCR** como `ghcr.io/<owner>/mto-gateway`, con las
     etiquetas `sha-<corto>` y `latest`. Se autentica con el `GITHUB_TOKEN` del propio workflow
     (`permissions: packages: write`), así que **no hay ningún secreto que dar de alta**.
