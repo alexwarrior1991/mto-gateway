@@ -30,6 +30,7 @@ services:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-http://otel.mto.local:4318/v1/traces}
       APP_CORS_ALLOWED_ORIGINS: ${APP_CORS_ALLOWED_ORIGINS:-http://localhost:4200}
       GATEWAY_TRUSTED_PROXIES: ${GATEWAY_TRUSTED_PROXIES:-}
+      GATEWAY_MAX_REQUEST_BODY_SIZE: ${GATEWAY_MAX_REQUEST_BODY_SIZE:-21MB}
       JAVA_OPTS: ${JAVA_OPTS:-}
     # En Linux 'host.docker.internal' no existe salvo que se declare; en Docker Desktop ya viene.
     extra_hosts:
