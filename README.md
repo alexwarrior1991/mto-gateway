@@ -10,6 +10,7 @@ El gateway **no persiste nada** y **no decide permisos de negocio**. Lo que hace
 - autenticar en el borde (firma, emisor y vigencia del JWT del realm),
 - dar a cada petición un identificador de correlación y propagarlo,
 - resolver CORS para los clientes web,
+- decir a cada servicio de dónde viene la llamada, sin creerse lo que diga el cliente,
 - aislar fallos con timeouts y circuit breaker,
 - exponer su propia salud y sus métricas.
 
@@ -157,6 +158,7 @@ partir de una base.
 | `KEYCLOAK_AUDIENCE` | *(vacío)* | Obligatoria si la anterior es `true` |
 | `APP_CORS_ALLOWED_ORIGINS` | `http://localhost:4200,http://localhost:5173` | Lista separada por comas, sin comodines |
 | `SERVER_FORWARD_HEADERS_STRATEGY` | `none` | `framework` solo detrás de un ingress de confianza |
+| `GATEWAY_TRUSTED_PROXIES` | *(vacío)* | Proxies a los que se cree el `X-Forwarded-For`: IP o CIDR, separados por comas. Ver [De dónde viene la llamada](#de-dónde-viene-la-llamada) |
 | `MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE` | `health,info,prometheus` | Endpoints de Actuator publicados |
 | `MTO_TRACING_ENABLED` | `true` | Trazado distribuido |
 | `MTO_TRACING_SAMPLING_PROBABILITY` | `0.1` | Fracción de trazas muestreadas |
@@ -409,6 +411,52 @@ consola del navegador, lejos de quien escribió la configuración.
 
 ---
 
+## De dónde viene la llamada
+
+Los servicios apuntan la IP de quien hace un cambio —la revisión de Envers de `mto-maintenance`,
+`mto-stock`, `mto-configuration` y `mto-resources`— y la leen del **primer valor de
+`X-Forwarded-For`**, porque detrás del gateway su `getRemoteAddr()` es el gateway. Esa cabecera la
+escribe el gateway y nadie más (`ClientAddressRequestHeadersFilter`):
+
+- **De lo que llega se quitan** `Forwarded`, todas las `X-Forwarded-*` y `X-Real-IP`. Lo que el
+  cliente diga de sí mismo no cruza el proxy.
+- **Hacia el servicio sale un único `X-Forwarded-For` con una sola dirección**: la del cliente tal
+  como la vio el gateway. Al ser una sola, no hay «primer salto» que alguien pueda poner delante.
+  No salen `X-Forwarded-Host`, `-Proto`, `-Port` ni `-Prefix`: ningún servicio construye URLs con
+  ellas, y lo que no se manda no se puede falsificar.
+
+Quién es el cliente lo decide `app.forwarded.trusted-proxies` (`GATEWAY_TRUSTED_PROXIES`), una lista
+de direcciones o rangos CIDR, **vacía por defecto**:
+
+| `trusted-proxies` | El cliente es |
+|---|---|
+| vacía | quien abrió la conexión con el gateway; su `X-Forwarded-For` no cuenta |
+| con rangos | el primer salto que no es un proxy de confianza, leyendo el `X-Forwarded-For` que llegó **de derecha a izquierda** y empezando por quien abrió la conexión |
+
+Cada proxy añade a la derecha la dirección de quien le llamó, así que solo se le cree un salto a
+quien está en la lista. Lo que quede a la izquierda del primero que no lo está lo escribió el
+cliente y se ignora: con el router delante, `X-Forwarded-For: 6.6.6.6, 203.0.113.7` es un cliente en
+`203.0.113.7` que mandó un `6.6.6.6` falso. Un valor que no es una IP (`unknown`, un nombre, una
+dirección con puerto) corta el recorrido, y quien llama sin ser de la lista es el cliente, diga lo
+que diga. Solo se lee `X-Forwarded-For`, que es lo que pone el router; `Forwarded` (RFC 7239) no.
+
+En OpenShift delante están el router (HAProxy), que añade la dirección real, y los pods que llaman
+por el Service: el nginx de `mto-frontend`, que deja pasar el `X-Forwarded-For` del router, y
+`mto-backoffice`, que llama servidor a servidor. La lista son los rangos **de esos proxies y solo de
+ellos** (los nodos del router si corre en la red del host, o la red de pods): quien esté en un rango
+de confianza escribe la IP que queda en la auditoría. Sin configurarla, lo que se apunta es la
+dirección del router o del pod que llamó: poco útil, pero nunca elegida por el cliente. Un rango mal
+escrito impide arrancar.
+
+Nada de esto depende de `SERVER_FORWARD_HEADERS_STRATEGY`. Con `framework`, el
+`ForwardedHeaderFilter` de Spring esconde las `X-Forwarded-*` y contesta en `getRemoteAddr()` el
+primer valor de la lista, el que escribe cualquiera; el filtro lee la conexión y sus cabeceras de la
+petición de Tomcat, por debajo de ese envoltorio. Tampoco de los filtros `X-Forwarded` de serie de
+Spring Cloud Gateway ni de su `spring.cloud.gateway.server.webmvc.trusted-proxies`, que es una
+expresión regular y, activada, reenvía también las `X-Forwarded-Host/Proto/Port/Prefix` del cliente:
+este filtro corre el último y deja solo lo suyo. Es un bean `HttpHeadersFilter`, como los de CORS:
+se aplica a todas las rutas sin declarar nada.
+
 ## Timeouts y resiliencia
 
 - Los timeouts se configuran con `spring.http.clients.connect-timeout` y `.read-timeout` — las claves
@@ -608,6 +656,8 @@ src/main/java/com/alejandro/mtogateway/
 │   └── GatewayAuthenticationErrorHandler.java  401 y 403 como problem+json
 ├── filter/
 │   ├── CorrelationIdFilter.java                X-Correlation-Id
+│   ├── ClientAddressRequestHeadersFilter.java  un único X-Forwarded-For, el que vio el gateway
+│   ├── ForwardedProperties.java                app.forwarded (proxies de confianza)
 │   ├── CorrelationIdProperties.java            app.correlation
 │   ├── RemoveCorrelationResponseHeaderFilter.java sin la correlación del servicio de vuelta
 │   ├── RemoveCorsRequestHeadersFilter.java     sin Origin ni Access-Control-* hacia el servicio
@@ -625,9 +675,10 @@ src/main/resources/
 
 src/test/java/com/alejandro/mtogateway/
 ├── MtoGatewayApplicationTests.java             arranque sin base de datos, rutas enlazadas
+├── ClientAddressRequestHeadersFilterTest.java  a quién se cree el X-Forwarded-For, sin contexto de Spring
 ├── CorrelationIdFilterTest.java                los filtros de la correlación, sin contexto de Spring
 ├── CorsHeadersFiltersTest.java                 los filtros de cabeceras CORS, sin contexto de Spring
-├── GatewayRoutingIntegrationTest.java          enrutado, correlación, seguridad y CORS de verdad
+├── GatewayRoutingIntegrationTest.java          enrutado, correlación, seguridad, CORS y X-Forwarded-For de verdad
 ├── GatewayTracingIntegrationTest.java          la traza nace y se propaga una sola vez
 ├── GatewayCorsHeaderNameTest.java              CORS sigue a app.correlation.header-name
 ├── GatewayFallbackIntegrationTest.java         qué ve el cliente con el servicio caído

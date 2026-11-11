@@ -207,6 +207,10 @@ server:
   # 'none' a proposito. Creerse las X-Forwarded-* de cualquiera permite falsificar el esquema y el
   # host que el gateway usa para construir redirects. Ponerlo en 'framework' SOLO cuando delante hay
   # un ingress o un balanceador de confianza que las reescribe.
+  #
+  # La direccion del cliente que se dice a los servicios NO depende de esto: sale de
+  # app.forwarded.trusted-proxies, mas abajo, y se lee por debajo de esta estrategia, que con
+  # 'framework' se cree el primer valor de X-Forwarded-For, el que escribe cualquiera.
   forward-headers-strategy: ${SERVER_FORWARD_HEADERS_STRATEGY:none}
   # Sin esto, un fallo del gateway devuelve al cliente la ruta interna y la traza. El detalle util
   # queda en el log, que es donde se puede correlacionar con el X-Correlation-Id.
@@ -368,6 +372,16 @@ app:
       # y activarlo solo ampliaria la superficie.
       allow-credentials: false
       max-age: 3600
+
+  forwarded:
+    # Los proxies que hay delante del gateway y a los que se les cree el X-Forwarded-For: direcciones
+    # o rangos CIDR separados por comas (el router de OpenShift y los pods que llaman por el, como
+    # mto-frontend). Vacia a proposito: no se confia en nadie y el cliente es quien abrio la conexion.
+    # Hacia los servicios sale siempre un unico X-Forwarded-For con una sola direccion, y nada de lo
+    # que el cliente traiga escrito en Forwarded, X-Forwarded-* o X-Real-IP (README, "De donde viene
+    # la llamada"). Nunca un rango que no sea solo de proxies: quien este en el escribe la IP que
+    # los servicios apuntan en su auditoria.
+    trusted-proxies: ${GATEWAY_TRUSTED_PROXIES:}
 
   correlation:
     header-name: X-Correlation-Id

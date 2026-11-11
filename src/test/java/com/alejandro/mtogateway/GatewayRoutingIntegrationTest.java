@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -12,6 +13,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.io.IOException;
@@ -66,6 +68,8 @@ class GatewayRoutingIntegrationTest {
     private static final List<String> RECEIVED_AUTHORIZATION = new CopyOnWriteArrayList<>();
     /** Todos los valores y no el primero: la pregunta es si llega alguno. */
     private static final List<String> RECEIVED_ORIGINS = new CopyOnWriteArrayList<>();
+    /** Las cabeceras que dicen de dónde viene la llamada, tal como llegan al servicio: {@code nombre: valor}. */
+    private static final List<String> RECEIVED_FORWARDED = new CopyOnWriteArrayList<>();
 
     private static final HttpServer DOWNSTREAM = startDownstream();
 
@@ -108,6 +112,13 @@ class GatewayRoutingIntegrationTest {
         RECEIVED_CORRELATION_IDS.add(exchange.getRequestHeaders().getFirst(CORRELATION_HEADER));
         RECEIVED_AUTHORIZATION.add(exchange.getRequestHeaders().getFirst("Authorization"));
         RECEIVED_ORIGINS.addAll(exchange.getRequestHeaders().getOrDefault("Origin", List.of()));
+        exchange.getRequestHeaders().forEach((name, values) -> {
+            String lowerCaseName = name.toLowerCase(Locale.ROOT);
+            if (lowerCaseName.equals("forwarded") || lowerCaseName.startsWith("x-forwarded-")
+                    || lowerCaseName.equals("x-real-ip")) {
+                values.forEach(value -> RECEIVED_FORWARDED.add(lowerCaseName + ": " + value));
+            }
+        });
 
         Headers responseHeaders = exchange.getResponseHeaders();
         String correlationId = exchange.getRequestHeaders().getFirst(CORRELATION_HEADER);
@@ -173,6 +184,7 @@ class GatewayRoutingIntegrationTest {
         RECEIVED_CORRELATION_IDS.clear();
         RECEIVED_AUTHORIZATION.clear();
         RECEIVED_ORIGINS.clear();
+        RECEIVED_FORWARDED.clear();
 
         Jwt jwt = Jwt.withTokenValue("stub-token")
                 .header("alg", "RS256")
@@ -522,6 +534,58 @@ class GatewayRoutingIntegrationTest {
         assertTrue(RECEIVED_PATHS.isEmpty(), "Lo rechaza el gateway, no el servicio");
     }
 
+    // ------------------------------------------------------------------ de dónde viene la llamada
+
+    /**
+     * Los servicios apuntan el primer valor de {@code X-Forwarded-For} como la IP de quien hizo el
+     * cambio. Lo que el cliente escriba ahí, o en cualquier otra cabecera de proxy, no puede llegar:
+     * llega una sola dirección, la de quien abrió la conexión con el gateway.
+     */
+    @Test
+    void whatTheClientSaysAboutWhereItComesFromNeverReachesTheService() throws Exception {
+        HttpResponse<String> response = forged("/api/maintenance/orders", "6.6.6.6");
+
+        assertEquals(200, response.statusCode());
+        assertEquals(List.of("x-forwarded-for: 127.0.0.1"), RECEIVED_FORWARDED);
+    }
+
+    @Test
+    void theServiceLearnsTheAddressTheGatewaySawAlthoughTheClientSaysNothing() throws Exception {
+        authenticated("/api/stock/materials");
+
+        assertEquals(List.of("x-forwarded-for: 127.0.0.1"), RECEIVED_FORWARDED);
+    }
+
+    /**
+     * Como en OpenShift: delante hay un proxy de confianza (el router, aquí el propio test, que
+     * llama desde 127.0.0.1) y {@code forward-headers-strategy=framework}, con la que Spring esconde
+     * las {@code X-Forwarded-*} y contesta en {@code getRemoteAddr()} el primer valor de la lista,
+     * que es el que escribe el cliente.
+     */
+    @Nested
+    @TestPropertySource(properties = {
+            "app.forwarded.trusted-proxies=127.0.0.1",
+            "server.forward-headers-strategy=framework"
+    })
+    class BehindATrustedProxy {
+
+        /** El router añade la dirección real a la derecha de lo que el cliente traía escrito. */
+        @Test
+        void theClientIsTheHopTheTrustedProxyAddedNotTheOneWrittenBeforeIt() throws Exception {
+            HttpResponse<String> response = forged("/api/maintenance/orders", "6.6.6.6, 203.0.113.7");
+
+            assertEquals(200, response.statusCode());
+            assertEquals(List.of("x-forwarded-for: 203.0.113.7"), RECEIVED_FORWARDED);
+        }
+
+        @Test
+        void aCallTheProxyMakesOnItsOwnIsTheProxys() throws Exception {
+            authenticated("/api/stock/materials");
+
+            assertEquals(List.of("x-forwarded-for: 127.0.0.1"), RECEIVED_FORWARDED);
+        }
+    }
+
     // ------------------------------------------------------------------ utilidades
 
     private URI gatewayUri(String path) {
@@ -537,6 +601,22 @@ class GatewayRoutingIntegrationTest {
         return CLIENT.send(
                 HttpRequest.newBuilder(gatewayUri(path))
                         .header("Authorization", "Bearer stub-token")
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** Una llamada con todas las cabeceras de proxy escritas por quien llama. */
+    private HttpResponse<String> forged(String path, String forwardedFor) throws Exception {
+        return CLIENT.send(
+                HttpRequest.newBuilder(gatewayUri(path))
+                        .header("Authorization", "Bearer stub-token")
+                        .header("X-Forwarded-For", forwardedFor)
+                        .header("Forwarded", "for=6.6.6.6;proto=https;host=evil.example")
+                        .header("X-Forwarded-Host", "evil.example")
+                        .header("X-Forwarded-Proto", "https")
+                        .header("X-Forwarded-Port", "443")
+                        .header("X-Forwarded-Prefix", "/evil")
+                        .header("X-Real-IP", "6.6.6.6")
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
     }
