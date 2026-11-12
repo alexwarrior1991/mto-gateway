@@ -152,6 +152,7 @@ partir de una base.
 | `GATEWAY_CONNECT_TIMEOUT` | `2s` | Abrir el socket contra el servicio |
 | `GATEWAY_READ_TIMEOUT` | `15s` | Tiempo máximo sin recibir bytes |
 | `GATEWAY_CIRCUIT_BREAKER_TIMEOUT` | `20s` | Red de seguridad de Resilience4j |
+| `GATEWAY_MAX_REQUEST_BODY_SIZE` | `21MB` | Lo más que mide el cuerpo de una petición; por encima, 413. Ver [Cuerpos y subidas](#cuerpos-y-subidas) |
 | `KEYCLOAK_ISSUER_URI` | `http://auth.mto.local:8082/realms/mto` | Realm que emite los tokens |
 | `KEYCLOAK_CLIENT_ID` | `mto-gateway-api` | Cliente del que se leen los roles de operación |
 | `KEYCLOAK_AUDIENCE_VALIDATION_ENABLED` | `false` | Ver [Seguridad](#seguridad) |
@@ -457,6 +458,50 @@ expresión regular y, activada, reenvía también las `X-Forwarded-Host/Proto/Po
 este filtro corre el último y deja solo lo suyo. Es un bean `HttpHeadersFilter`, como los de CORS:
 se aplica a todas las rutas sin declarar nada.
 
+## Cuerpos y subidas
+
+El gateway no interpreta el cuerpo de una petición: lo pasa al servicio byte a byte, con el
+`Content-Type` que escribió el cliente. Importa sobre todo en las importaciones de
+`mto-configuration` (`POST /api/configuration/profiles/jobs/import?dryRun=` y
+`/lovs/jobs/import`), que suben un `.xlsx` como `multipart/form-data` —el maestro de perfiles pesa
+3,3 MB— y contestan `202` con el trabajo.
+
+- **El multipart no se interpreta aquí.** Spring Cloud Gateway deja `spring.servlet.multipart.enabled`
+  en `false` (su `MultipartEnvironmentPostProcessor`), así que los topes de Spring
+  (`spring.servlet.multipart.max-file-size`, 1 MB por defecto, y `max-request-size`, 10 MB) **no se
+  aplican** en el gateway y el delimitador llega intacto. No hay que activarlo: con él, el
+  `DispatcherServlet` consumiría el cuerpo antes de que el proxy lo reenviara.
+- **El `Content-Type` no se retoca.** El `CharacterEncodingFilter` de Boot está apagado
+  (`spring.servlet.encoding.enabled: false`): con él, Spring daba por UTF-8 toda petición que no
+  dijera su juego de caracteres y el proxy se lo añadía a la cabecera hacia el servicio
+  (`multipart/form-data;boundary=X;charset=UTF-8`, `application/merge-patch+json;charset=UTF-8`).
+- **El tope es del gateway y es uno**: `app.request.max-body-size` (`GATEWAY_MAX_REQUEST_BODY_SIZE`,
+  21 MB), para cualquier ruta. Por encima contesta **413** con su `application/problem+json`
+  (`maxBodySize` en bytes y `correlationId`), sin llamar al servicio y sin contar para su circuito.
+  Con `Content-Length` se rechaza sin leer nada; sin él (`Transfer-Encoding: chunked`, como sube
+  `mto-backoffice`), en cuanto lo leído pasa del tope. Va detrás de la seguridad: sin token, 401.
+  Ni Tomcat ni Spring ponen otro: `server.tomcat.max-http-form-post-size` (2 MB) solo cuenta
+  formularios `x-www-form-urlencoded`, y `server.tomcat.max-swallow-size` (2 MB) no limita nada,
+  solo decide cuánto cuerpo sin leer se descarta tras un rechazo antes de cerrar la conexión.
+- **Por qué 21 MB.** Las dos aplicaciones web dejan elegir un fichero de hasta 20 MB y
+  `mto-configuration` admite 20 MB de fichero y 20 MB de petición (`spring.servlet.multipart.*` allí).
+  El cuerpo es el fichero más el envoltorio del multipart (unos cientos de bytes), así que el
+  gateway deja un margen para no ser él quien rechace lo que el servicio aceptaría: el tope del
+  fichero lo pone el servicio. Si se sube el del servicio, se sube este (y el
+  `client_max_body_size` del nginx de `mto-frontend`).
+- **El cuerpo se recibe entero antes de llamar al servicio** (`RequestBodyFilter`): hasta 256 KB en
+  memoria —cualquier JSON— y, por encima, en un fichero temporal de `java.io.tmpdir` que se borra al
+  terminar la petición (como mucho, el tope por subida en curso). El proxy por sí solo lo copia al
+  vuelo, y entonces los timeouts hacia el servicio incluían lo que el cliente tardaba en mandarlo:
+  una subida que tardara más de `GATEWAY_READ_TIMEOUT` en llegar acababa en el 503 del fallback, o
+  en una conexión cortada, con el servicio sano, y contaba como fallo suyo para abrir el circuito.
+  Ahora miden solo al servicio, y un cliente lento no le retiene una conexión. Lo que tarda el
+  cliente lo acota Tomcat (`server.tomcat.connection-timeout`, 20 s sin recibir nada).
+
+Lo prueba `GatewayRoutingIntegrationTest` con un multipart de 4 MB y de 20 MB (el mismo SHA-256, las
+mismas partes y el mismo `Content-Type` en el servicio), con y sin `Content-Length`, por encima del
+tope y con una subida más lenta que los timeouts.
+
 ## Timeouts y resiliencia
 
 - Los timeouts se configuran con `spring.http.clients.connect-timeout` y `.read-timeout` — las claves
@@ -482,6 +527,10 @@ se aplica a todas las rutas sin declarar nada.
   esperando a su servicio en un hilo del sistema operativo. `CircuitBreakerExecutorConfiguration` lo
   cambia por un hilo virtual por llamada (`circuit-breaker-N` en los logs), solo con los hilos
   virtuales activos. El `TimeLimiter` no cambia.
+- Los dos timeouts cuentan desde que el gateway abre la llamada al servicio, con el cuerpo de la
+  petición ya recibido ([Cuerpos y subidas](#cuerpos-y-subidas)): lo que tarde el cliente en subir
+  un fichero no entra. El `202` de una importación llega en cuanto el servicio ha leído el fichero;
+  el trabajo sigue aparte.
 
 > **Streaming.** `read-timeout` es un tiempo máximo *sin recibir bytes*, no un presupuesto total de
 > la petición. Un SSE o un *long-poll* que se quede callado más de ese tiempo se corta por la mitad.
@@ -659,6 +708,8 @@ src/main/java/com/alejandro/mtogateway/
 │   ├── ClientAddressRequestHeadersFilter.java  un único X-Forwarded-For, el que vio el gateway
 │   ├── ForwardedProperties.java                app.forwarded (proxies de confianza)
 │   ├── CorrelationIdProperties.java            app.correlation
+│   ├── RequestBodyFilter.java                  el cuerpo, recibido antes de llamar y con su tope (413)
+│   ├── RequestBodyLimitProperties.java         app.request (el tope)
 │   ├── RemoveCorrelationResponseHeaderFilter.java sin la correlación del servicio de vuelta
 │   ├── RemoveCorsRequestHeadersFilter.java     sin Origin ni Access-Control-* hacia el servicio
 │   └── RemoveCorsResponseHeadersFilter.java    sin Access-Control-* ni su Vary de vuelta
@@ -669,7 +720,7 @@ keycloak/
 └── mto-gateway-partial-import.json             cliente mto-gateway-api y sus roles de operación
 
 src/main/resources/
-├── application.yaml                            rutas, timeouts, seguridad, CORS, resiliencia
+├── application.yaml                            rutas, timeouts, tope del cuerpo, seguridad, CORS, resiliencia
 ├── application-local.yaml                      log de enrutado en DEBUG
 └── application-docker.yaml                     destinos por nombre de servicio
 
@@ -678,7 +729,7 @@ src/test/java/com/alejandro/mtogateway/
 ├── ClientAddressRequestHeadersFilterTest.java  a quién se cree el X-Forwarded-For, sin contexto de Spring
 ├── CorrelationIdFilterTest.java                los filtros de la correlación, sin contexto de Spring
 ├── CorsHeadersFiltersTest.java                 los filtros de cabeceras CORS, sin contexto de Spring
-├── GatewayRoutingIntegrationTest.java          enrutado, correlación, seguridad, CORS y X-Forwarded-For de verdad
+├── GatewayRoutingIntegrationTest.java          enrutado, correlación, seguridad, CORS, X-Forwarded-For y subidas multipart de verdad
 ├── GatewayTracingIntegrationTest.java          la traza nace y se propaga una sola vez
 ├── GatewayCorsHeaderNameTest.java              CORS sigue a app.correlation.header-name
 ├── GatewayFallbackIntegrationTest.java         qué ve el cliente con el servicio caído

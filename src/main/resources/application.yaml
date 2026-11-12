@@ -22,6 +22,15 @@ spring:
       connect-timeout: ${GATEWAY_CONNECT_TIMEOUT:2s}
       read-timeout: ${GATEWAY_READ_TIMEOUT:15s}
 
+  servlet:
+    # Sin el CharacterEncodingFilter de Boot. Con el, toda peticion que no dice su juego de caracteres
+    # pasa a ser UTF-8 para Spring, y el proxy se lo anade a la cabecera que manda al servicio: un
+    # 'multipart/form-data; boundary=X' salia como 'multipart/form-data;boundary=X;charset=UTF-8'. El
+    # gateway no lee cuerpos: el Content-Type llega al servicio como lo escribio el cliente. Lo que
+    # el gateway contesta el mismo es JSON, que es UTF-8 sin decirlo.
+    encoding:
+      enabled: false
+
   security:
     oauth2:
       resourceserver:
@@ -382,6 +391,22 @@ app:
     # la llamada"). Nunca un rango que no sea solo de proxies: quien este en el escribe la IP que
     # los servicios apuntan en su auditoria.
     trusted-proxies: ${GATEWAY_TRUSTED_PROXIES:}
+
+  request:
+    # Lo mas que puede medir el cuerpo de una peticion, en cualquier ruta; por encima, 413 del
+    # gateway. Es el unico tope que hay aqui: el gateway no interpreta el multipart (Spring Cloud
+    # Gateway deja spring.servlet.multipart.enabled en false), asi que
+    # spring.servlet.multipart.max-file-size/max-request-size no se aplican, y
+    # server.tomcat.max-http-form-post-size solo cuenta formularios urlencoded.
+    #
+    # 21 MB: los 20 MB de fichero que las aplicaciones web dejan subir a las importaciones de
+    # mto-configuration mas el envoltorio del multipart. El tope del fichero lo pone el servicio
+    # (spring.servlet.multipart.* alli); este solo tiene que no quedarse por debajo.
+    #
+    # El cuerpo se recibe entero antes de llamar al servicio (RequestBodyFilter): hasta 256 KB en
+    # memoria y, por encima, en un fichero temporal de java.io.tmpdir que se borra al terminar. Asi
+    # los timeouts de arriba miden al servicio y no la linea del cliente.
+    max-body-size: ${GATEWAY_MAX_REQUEST_BODY_SIZE:21MB}
 
   correlation:
     header-name: X-Correlation-Id

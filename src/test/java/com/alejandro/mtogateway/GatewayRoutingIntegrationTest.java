@@ -16,6 +16,8 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
@@ -24,10 +26,15 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
+import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -70,6 +77,12 @@ class GatewayRoutingIntegrationTest {
     private static final List<String> RECEIVED_ORIGINS = new CopyOnWriteArrayList<>();
     /** Las cabeceras que dicen de dónde viene la llamada, tal como llegan al servicio: {@code nombre: valor}. */
     private static final List<String> RECEIVED_FORWARDED = new CopyOnWriteArrayList<>();
+
+    /** Los cuerpos que llegan al servicio, uno por petición con cuerpo: lo que de verdad cruzó el gateway. */
+    private static final List<ReceivedBody> RECEIVED_BODIES = new CopyOnWriteArrayList<>();
+
+    private static final String XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    private static final int MEGABYTE = 1024 * 1024;
 
     private static final HttpServer DOWNSTREAM = startDownstream();
 
@@ -120,6 +133,14 @@ class GatewayRoutingIntegrationTest {
             }
         });
 
+        boolean hasBody = !"GET".equals(exchange.getRequestMethod()) && !"OPTIONS".equals(exchange.getRequestMethod());
+        if (hasBody) {
+            // Leído entero antes de contestar, como hace un servicio con un multipart: si el gateway
+            // corta el cuerpo a medias, la lectura falla y aquí no se apunta nada.
+            byte[] body = exchange.getRequestBody().readAllBytes();
+            RECEIVED_BODIES.add(new ReceivedBody(exchange.getRequestHeaders().getFirst("Content-Type"), body));
+        }
+
         Headers responseHeaders = exchange.getResponseHeaders();
         String correlationId = exchange.getRequestHeaders().getFirst(CORRELATION_HEADER);
         if (correlationId != null) {
@@ -136,6 +157,12 @@ class GatewayRoutingIntegrationTest {
         }
         if (origin != null) {
             responseHeaders.add("Access-Control-Allow-Origin", origin);
+        }
+        if (hasBody && exchange.getRequestURI().getPath().endsWith("/jobs/import")) {
+            // Lo que contesta mto-configuration al lanzar una importación: 202 con el trabajo.
+            responseHeaders.add("Location", "/api/v1/configuration/profiles/jobs/42");
+            respond(exchange, 202, "application/json", "{\"jobId\":42,\"status\":\"PENDING\"}");
+            return;
         }
         respond(exchange, 200, "application/json", "{\"ok\":true}");
     }
@@ -185,6 +212,7 @@ class GatewayRoutingIntegrationTest {
         RECEIVED_AUTHORIZATION.clear();
         RECEIVED_ORIGINS.clear();
         RECEIVED_FORWARDED.clear();
+        RECEIVED_BODIES.clear();
 
         Jwt jwt = Jwt.withTokenValue("stub-token")
                 .header("alg", "RS256")
@@ -586,6 +614,203 @@ class GatewayRoutingIntegrationTest {
         }
     }
 
+    // ------------------------------------------------------------------ subidas multipart
+
+    /**
+     * La importación de perfiles de mto-configuration sube un .xlsx como {@code multipart/form-data}
+     * ({@code POST /profiles/jobs/import?dryRun=}, parte {@code file}); el maestro real pesa 3,3 MB.
+     * El gateway no interpreta el multipart: el cuerpo llega al servicio byte a byte, con la misma
+     * cabecera {@code Content-Type} —el delimitador va en ella— y el parámetro de la query.
+     */
+    @Test
+    void aFourMegabyteWorkbookReachesTheServiceByteForByte() throws Exception {
+        MultipartUpload upload = MultipartUpload.withWorkbookOf(4 * MEGABYTE);
+
+        HttpResponse<String> response = upload(upload, HttpRequest.BodyPublishers.ofByteArray(upload.body()));
+
+        assertTheServiceReceived(upload, response);
+    }
+
+    /** 20 MB es lo más que dejan subir las dos aplicaciones web: el fichero entero tiene que caber. */
+    @Test
+    void aTwentyMegabyteWorkbookReachesTheServiceByteForByte() throws Exception {
+        MultipartUpload upload = MultipartUpload.withWorkbookOf(20 * MEGABYTE);
+
+        HttpResponse<String> response = upload(upload, HttpRequest.BodyPublishers.ofByteArray(upload.body()));
+
+        assertTheServiceReceived(upload, response);
+    }
+
+    /**
+     * Como sube mto-backoffice: su {@code RestClient} escribe el multipart sin saber cuánto va a
+     * medir, así que no manda {@code Content-Length} sino {@code Transfer-Encoding: chunked}.
+     */
+    @Test
+    void aWorkbookSentWithoutContentLengthReachesTheServiceByteForByte() throws Exception {
+        MultipartUpload upload = MultipartUpload.withWorkbookOf(4 * MEGABYTE);
+
+        HttpResponse<String> response = upload(upload,
+                HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(upload.body())));
+
+        assertTheServiceReceived(upload, response);
+    }
+
+    /**
+     * Por encima del tope, el gateway contesta él, con su cuerpo de error y el identificador de
+     * correlación, y el servicio no ve nada: ni un 500, ni una conexión cortada.
+     */
+    @Test
+    void aBodyOverTheLimitIsAnsweredWithACleanPayloadTooLarge() throws Exception {
+        MultipartUpload upload = MultipartUpload.withWorkbookOf(21 * MEGABYTE);
+
+        HttpResponse<String> response = upload(upload, HttpRequest.BodyPublishers.ofByteArray(upload.body()));
+
+        assertPayloadTooLarge(response);
+        assertTrue(RECEIVED_PATHS.isEmpty(), "Se rechaza por su Content-Length, antes de llamar al servicio");
+    }
+
+    @Test
+    void aBodyOverTheLimitFromSomeoneWithoutATokenIsStillUnauthorized() throws Exception {
+        MultipartUpload upload = MultipartUpload.withWorkbookOf(21 * MEGABYTE);
+
+        HttpResponse<String> response = CLIENT.send(
+                HttpRequest.newBuilder(gatewayUri(MultipartUpload.IMPORT_PATH))
+                        .header("Content-Type", upload.contentType())
+                        .POST(HttpRequest.BodyPublishers.ofByteArray(upload.body()))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(401, response.statusCode(), "Quién es va antes que cuánto manda");
+    }
+
+    /**
+     * El cuerpo de cualquier otra escritura cruza igual: los mismos bytes y el {@code Content-Type}
+     * que escribió el cliente, sin un {@code charset} que él no dijo.
+     */
+    @Test
+    void aMergePatchBodyReachesTheServiceWithTheContentTypeTheClientWrote() throws Exception {
+        byte[] patch = "{\"description\":\"Tramo de la vía 2\",\"version\":3}".getBytes(StandardCharsets.UTF_8);
+
+        HttpResponse<String> response = CLIENT.send(
+                HttpRequest.newBuilder(gatewayUri("/api/maintenance/assets/7"))
+                        .header("Authorization", "Bearer stub-token")
+                        .header("Content-Type", "application/merge-patch+json")
+                        .method("PATCH", HttpRequest.BodyPublishers.ofByteArray(patch))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(200, response.statusCode());
+        assertEquals(1, RECEIVED_BODIES.size());
+        assertEquals("application/merge-patch+json", RECEIVED_BODIES.get(0).contentType());
+        assertEquals(new String(patch, StandardCharsets.UTF_8),
+                new String(RECEIVED_BODIES.get(0).body(), StandardCharsets.UTF_8));
+    }
+
+    /** Un formulario lo lee Tomcat como parámetros y lo recompone el gateway: sigue llegando. */
+    @Test
+    void aUrlEncodedFormStillReachesTheService() throws Exception {
+        HttpResponse<String> response = CLIENT.send(
+                HttpRequest.newBuilder(gatewayUri("/api/stock/materials"))
+                        .header("Authorization", "Bearer stub-token")
+                        .header("Content-Type", "application/x-www-form-urlencoded")
+                        .POST(HttpRequest.BodyPublishers.ofString("code=CU-107&name=Hilo+de+contacto"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(200, response.statusCode());
+        assertEquals(1, RECEIVED_BODIES.size());
+        String form = new String(RECEIVED_BODIES.get(0).body(), StandardCharsets.UTF_8);
+        assertTrue(form.contains("code=CU-107") && form.contains("name=Hilo+de+contacto"), form);
+    }
+
+    @Nested
+    @TestPropertySource(properties = "app.request.max-body-size=64KB")
+    class WithASmallBodyLimit {
+
+        /**
+         * Sin {@code Content-Length} no se sabe cuánto mide hasta haberlo leído. El gateway lo
+         * recibe entero antes de llamar, así que el tope salta sin que el servicio vea nada.
+         */
+        @Test
+        void aBodyWithoutContentLengthOverTheLimitNeverReachesTheService() throws Exception {
+            MultipartUpload upload = MultipartUpload.withWorkbookOf(MEGABYTE);
+
+            HttpResponse<String> response = upload(upload,
+                    HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(upload.body())));
+
+            assertPayloadTooLarge(response);
+            assertTrue(RECEIVED_PATHS.isEmpty(), "No se ha llamado al servicio");
+        }
+
+        /**
+         * Un cuerpo demasiado grande es un error de quien lo manda, no del servicio: si contara como
+         * fallo, una docena de subidas así abrirían el circuito y dejarían a todos sin el servicio.
+         */
+        @Test
+        void bodiesOverTheLimitDoNotOpenTheCircuitOfTheService() throws Exception {
+            MultipartUpload upload = MultipartUpload.withWorkbookOf(MEGABYTE);
+            for (int i = 0; i < 25; i++) {
+                assertPayloadTooLarge(upload(upload,
+                        HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(upload.body()))));
+            }
+
+            assertEquals(200, authenticated("/api/configuration/profiles").statusCode());
+        }
+
+        /** También en una ruta sin circuito, la de Actuator del servicio. */
+        @Test
+        void aBodyOverTheLimitOnARouteWithoutCircuitIsAlsoPayloadTooLarge() throws Exception {
+            HttpResponse<String> response = CLIENT.send(
+                    HttpRequest.newBuilder(gatewayUri("/api/configuration/actuator/loggers/x"))
+                            .header("Authorization", "Bearer stub-token")
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofInputStream(
+                                    () -> new ByteArrayInputStream(new byte[MEGABYTE])))
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+
+            assertPayloadTooLarge(response);
+            assertTrue(RECEIVED_PATHS.isEmpty(), "No se ha llamado al servicio");
+        }
+
+        @Test
+        void aBodyUnderTheLimitStillPasses() throws Exception {
+            MultipartUpload upload = MultipartUpload.withWorkbookOf(16 * 1024);
+
+            HttpResponse<String> response = upload(upload,
+                    HttpRequest.BodyPublishers.ofInputStream(() -> new ByteArrayInputStream(upload.body())));
+
+            assertTheServiceReceived(upload, response);
+        }
+    }
+
+    /**
+     * Los timeouts hacia el servicio, encogidos para que el test no tarde: 1 s de lectura y 2 s de
+     * circuito en vez de 15 s y 20 s.
+     */
+    @Nested
+    @TestPropertySource(properties = {
+            "spring.http.clients.read-timeout=1s",
+            "resilience4j.timelimiter.configs.default.timeout-duration=2s"
+    })
+    class WithShortTimeouts {
+
+        /**
+         * Una subida que tarda en llegar más que los dos timeouts juntos. Miden al servicio, no la
+         * línea del cliente: mientras el proxy copiaba el cuerpo al vuelo, esta subida acababa en el
+         * 503 del fallback —o en una conexión cortada— con el servicio sano.
+         */
+        @Test
+        void anUploadThatTakesLongerToSendThanTheTimeoutsStillArrives() throws Exception {
+            MultipartUpload upload = MultipartUpload.withWorkbookOf(MEGABYTE);
+
+            HttpResponse<String> response = upload(upload,
+                    HttpRequest.BodyPublishers.ofInputStream(() -> new TricklingInputStream(upload.body(), 4000)));
+
+            assertTheServiceReceived(upload, response);
+        }
+    }
+
     // ------------------------------------------------------------------ utilidades
 
     private URI gatewayUri(String path) {
@@ -629,6 +854,175 @@ class GatewayRoutingIntegrationTest {
                         .header("Origin", origin)
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<String> upload(MultipartUpload upload, HttpRequest.BodyPublisher publisher) throws Exception {
+        return CLIENT.send(
+                HttpRequest.newBuilder(gatewayUri(MultipartUpload.IMPORT_PATH))
+                        .header("Authorization", "Bearer stub-token")
+                        .header("Content-Type", upload.contentType())
+                        .POST(publisher)
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+    }
+
+    private static void assertTheServiceReceived(MultipartUpload upload, HttpResponse<String> response) {
+        assertEquals(202, response.statusCode(), response.body());
+        assertTrue(response.body().contains("\"jobId\":42"), "El trabajo que contesta el servicio vuelve tal cual");
+        assertEquals(List.of("/api/v1/configuration/profiles/jobs/import?dryRun=true"), RECEIVED_PATHS);
+
+        assertEquals(1, RECEIVED_BODIES.size());
+        ReceivedBody received = RECEIVED_BODIES.get(0);
+        assertEquals(upload.contentType(), received.contentType(), "El delimitador viaja en esta cabecera");
+        assertEquals(upload.body().length, received.body().length, "El cuerpo mide lo mismo");
+        assertEquals(sha256(upload.body()), sha256(received.body()), "Y es el mismo, byte a byte");
+
+        // Lo que leería el servicio al interpretar el multipart: las mismas partes, con su nombre,
+        // su fichero, su tipo y su contenido.
+        assertEquals(
+                List.of(
+                        new ReceivedPart("file", "profile-master.xlsx", XLSX,
+                                upload.workbook().length, sha256(upload.workbook())),
+                        new ReceivedPart("note", null, "text/plain; charset=UTF-8",
+                                MultipartUpload.NOTE.getBytes(StandardCharsets.UTF_8).length,
+                                sha256(MultipartUpload.NOTE.getBytes(StandardCharsets.UTF_8)))),
+                received.parts());
+    }
+
+    private static void assertPayloadTooLarge(HttpResponse<String> response) {
+        assertEquals(413, response.statusCode(), response.body());
+        assertEquals("application/problem+json", response.headers().firstValue("Content-Type").orElse(null));
+        String correlationId = response.headers().firstValue(CORRELATION_HEADER).orElseThrow();
+        assertTrue(response.body().contains("\"correlationId\":\"" + correlationId + "\""), response.body());
+        assertTrue(response.body().contains("\"status\":413"), response.body());
+        assertTrue(response.body().contains("\"maxBodySize\":"), "Dice cuál es el tope: " + response.body());
+    }
+
+    private static String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * Una subida como la de las aplicaciones web, generada aquí y no leída de un fichero: una parte
+     * {@code file} binaria del tamaño pedido y una de texto. Los bytes salen de una semilla fija, así
+     * que un fallo se repite igual.
+     */
+    private record MultipartUpload(String boundary, byte[] workbook, byte[] body) {
+
+        static final String IMPORT_PATH = "/api/configuration/profiles/jobs/import?dryRun=true";
+        static final String NOTE = "importación de prueba";
+
+        static MultipartUpload withWorkbookOf(int size) {
+            byte[] workbook = new byte[size];
+            new Random(size).nextBytes(workbook);
+            String boundary = "----mto-gateway-test-" + size;
+
+            ByteArrayOutputStream body = new ByteArrayOutputStream(size + 1024);
+            body.writeBytes(("--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"file\"; filename=\"profile-master.xlsx\"\r\n"
+                    + "Content-Type: " + XLSX + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            body.writeBytes(workbook);
+            body.writeBytes(("\r\n--" + boundary + "\r\n"
+                    + "Content-Disposition: form-data; name=\"note\"\r\n"
+                    + "Content-Type: text/plain; charset=UTF-8\r\n\r\n"
+                    + NOTE
+                    + "\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+            return new MultipartUpload(boundary, workbook, body.toByteArray());
+        }
+
+        String contentType() {
+            return "multipart/form-data; boundary=" + boundary;
+        }
+    }
+
+    /** Un cuerpo que sale a trozos repartidos en el tiempo, como por una línea lenta. */
+    private static final class TricklingInputStream extends ByteArrayInputStream {
+
+        private static final int CHUNKS = 20;
+        private final int chunkSize;
+        private final long pauseMillis;
+
+        private TricklingInputStream(byte[] content, long totalMillis) {
+            super(content);
+            this.chunkSize = Math.max(1, content.length / CHUNKS);
+            this.pauseMillis = totalMillis / CHUNKS;
+        }
+
+        @Override
+        public synchronized int read(byte[] buffer, int offset, int length) {
+            try {
+                Thread.sleep(pauseMillis);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return super.read(buffer, offset, Math.min(length, chunkSize));
+        }
+    }
+
+    /** Una parte tal como la vería el servicio. */
+    private record ReceivedPart(String name, String filename, String contentType, int size, String sha256) {
+    }
+
+    private record ReceivedBody(String contentType, byte[] body) {
+
+        /**
+         * El multipart interpretado a mano, a partir del delimitador de la cabecera que llegó: si el
+         * gateway la cambiara o reescribiera el cuerpo, las partes no saldrían.
+         */
+        List<ReceivedPart> parts() {
+            String marker = "boundary=";
+            byte[] delimiter = ("--" + contentType.substring(contentType.indexOf(marker) + marker.length()))
+                    .getBytes(StandardCharsets.UTF_8);
+            byte[] headersEnd = "\r\n\r\n".getBytes(StandardCharsets.UTF_8);
+
+            List<ReceivedPart> parts = new ArrayList<>();
+            int start = indexOf(body, delimiter, 0);
+            while (start >= 0) {
+                int next = indexOf(body, delimiter, start + delimiter.length);
+                if (next < 0) {
+                    break;
+                }
+                int headersStart = start + delimiter.length + 2;
+                int contentStart = indexOf(body, headersEnd, headersStart) + headersEnd.length;
+                String headers = new String(body, headersStart, contentStart - headersStart, StandardCharsets.UTF_8);
+                // El CRLF de antes del delimitador es del delimitador, no del contenido.
+                byte[] content = Arrays.copyOfRange(body, contentStart, next - 2);
+                parts.add(new ReceivedPart(
+                        between(headers, "name=\"", "\""),
+                        between(headers, "filename=\"", "\""),
+                        between(headers, "Content-Type: ", "\r\n"),
+                        content.length,
+                        sha256(content)));
+                start = next;
+            }
+            return parts;
+        }
+
+        private static String between(String text, String from, String to) {
+            int start = text.indexOf(from);
+            if (start < 0) {
+                return null;
+            }
+            start += from.length();
+            return text.substring(start, text.indexOf(to, start));
+        }
+
+        private static int indexOf(byte[] haystack, byte[] needle, int from) {
+            outer:
+            for (int i = from; i <= haystack.length - needle.length; i++) {
+                for (int j = 0; j < needle.length; j++) {
+                    if (haystack[i + j] != needle[j]) {
+                        continue outer;
+                    }
+                }
+                return i;
+            }
+            return -1;
+        }
     }
 
     /** Los valores de {@code Vary}, vengan en líneas separadas o unidos por comas, en minúsculas. */
