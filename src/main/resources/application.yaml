@@ -35,7 +35,7 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          # Mismo realm que mto-configuration y mto-stock: el token que acepta el gateway es el
+          # Mismo realm que los servicios de detras: el token que acepta el gateway es el
           # mismo que aceptan ellos, y viaja intacto aguas abajo.
           issuer-uri: ${KEYCLOAK_ISSUER_URI:http://auth.mto.local:8082/realms/mto}
 
@@ -151,7 +151,7 @@ spring:
 
             # Mantenimiento de catenaria: ordenes, turnos, inspecciones, defectos y materiales.
             # Aqui los dos prefijos coinciden ('/api/maintenance' -> '/api/v1/maintenance'); se
-            # mantiene RewritePath por uniformidad con las otras dos rutas.
+            # mantiene RewritePath por uniformidad con las demas rutas.
             - id: mto-maintenance-api
               uri: ${app.services.maintenance.url}
               order: 12
@@ -278,7 +278,7 @@ management:
       show-components: when-authorized
       roles: OPS_METRICS
   # Trazabilidad distribuida. El gateway es el borde: aqui es donde nace la traza que despues
-  # continua en mto-configuration y en mto-stock, los tres contra el mismo colector. La cadena llega
+  # continua en los servicios de detras, todos contra el mismo colector. La cadena llega
   # incluso al salto asincrono, porque mto-configuration inyecta el contexto en las cabeceras del
   # mensaje y el consumidor de mto-stock lo continua; ver README.md.
   tracing:
@@ -410,6 +410,6 @@ app:
 
   correlation:
     header-name: X-Correlation-Id
-    # Un valor que llega de fuera acaba escrito en los logs de tres servicios. Se acota la longitud
+    # Un valor que llega de fuera acaba escrito en los logs del gateway y de los servicios por los que pasa. Se acota la longitud
     # y el juego de caracteres para que no pueda inyectar saltos de linea ni cabeceras.
     max-length: 64

@@ -177,7 +177,7 @@ partir de una base.
 
 ## Arranque en local
 
-Requisitos: JDK 25 y los dos servicios en marcha (o cualquier cosa que responda en sus URLs).
+Requisitos: JDK 25 y los servicios de detrás en marcha (o cualquier cosa que responda en sus URLs).
 
 ```bash
 # Con los valores por defecto
@@ -265,8 +265,8 @@ que permite seguir una petición desde el navegador hasta `mto-stock` y volver.
 - Si la petición ya trae uno **válido**, se conserva.
 - Si no trae ninguno, o el que trae no es válido, se genera un UUID.
 - **Válido** significa `[A-Za-z0-9._-]` y como mucho 64 caracteres (`app.correlation.max-length`).
-  La validación no es cosmética: ese valor acaba escrito en los logs de tres servicios y en una
-  cabecera saliente, de modo que un CR/LF permitiría partir la línea e inventarse entradas de log, o
+  La validación no es cosmética: ese valor acaba escrito en los logs del gateway y de cada servicio por el que
+  pasa la petición y en una cabecera saliente, de modo que un CR/LF permitiría partir la línea e inventarse entradas de log, o
   colar una cabecera entera contra el servicio de destino.
 - Un valor inválido **se sustituye, no se rechaza**. Devolver un 400 convertiría una cabecera de
   traza —opcional y meramente informativa— en un motivo para tirar la petición.
@@ -290,13 +290,13 @@ El gateway es el **borde de autenticación** y los servicios siguen siendo los d
 
 - El gateway comprueba que el token está firmado por el realm, que lo emitió quien dice y que sigue
   vigente, y rechaza el tráfico anónimo antes de gastar una conexión contra un servicio.
-- Quién puede leer qué y quién puede borrar qué lo sigue decidiendo `mto-configuration` y
-  `mto-stock`, cada uno sobre sus datos. Duplicar aquí su matriz de roles crearía una segunda fuente
+- Quién puede leer qué y quién puede borrar qué lo sigue decidiendo cada servicio de
+  detrás, sobre sus datos. Duplicar aquí su matriz de roles crearía una segunda fuente
   de verdad que se desincronizaría con la primera ruta nueva.
 - La cabecera `Authorization` viaja **intacta** aguas abajo. No se usa `TokenRelay`, que cambiaría el
-  token del usuario por el del gateway: los dos servicios auditan a la persona, no al proxy.
+  token del usuario por el del gateway: los servicios de detrás auditan a la persona, no al proxy.
 
-**No hay un interruptor para apagar la seguridad**, igual que en los otros dos repositorios: lo que
+**No hay un interruptor para apagar la seguridad**, igual que en los servicios de detrás: lo que
 cambia entre entornos son las properties, no la existencia de la cadena de filtros. Con
 `spring-boot-starter-security` en el classpath, un flag de ese tipo tampoco desactivaría nada —
 quedarse sin `SecurityFilterChain` propio devuelve el control a la cadena por defecto de Boot, con
@@ -304,12 +304,12 @@ formulario de login, CSRF y sesiones delante de una API.
 
 Abiertos sin token: `OPTIONS /**` (el *preflight* viaja sin `Authorization` por definición),
 `/actuator/health`, `/actuator/health/**`, `/actuator/info`, `/fallback/**`, `/error` y las sondas de
-los servicios (`/api/*/actuator/health`, `/api/*/actuator/info`). Esto último no abre nada nuevo: los dos
+los servicios (`/api/*/actuator/health`, `/api/*/actuator/info`). Esto último no abre nada nuevo: los
 servicios ya sirven `/actuator/health` sin autenticar y con `show-details: when-authorized`.
 
 El resto de `/actuator/**` del gateway —`prometheus` incluido, que enumera las rutas internas— pide
 el rol de cliente `ops-metrics` (`ops-write` para POST y DELETE), los mismos nombres que usan los
-otros dos servicios. Son roles **de cliente**, así que hay que declararlos en el cliente
+servicios de detrás. Son roles **de cliente**, así que hay que declararlos en el cliente
 `mto-gateway-api` del realm.
 
 ### Por qué la audiencia no se valida aquí
@@ -321,8 +321,8 @@ dejara pasar uno sin la audiencia del destino, el 401 llegaría **después** del
 fallo más confuso posible.
 
 Por eso `KEYCLOAK_AUDIENCE_VALIDATION_ENABLED=false` de serie. El requisito previo —que el
-*audience mapper* de `mto-frontend` emita `mto-gateway-api` junto a `mto-configuration-api` y
-`mto-stock-api` en el mismo token— **ya está puesto** en el realm base de `mto-platform`, así que
+*audience mapper* de `mto-frontend` emita `mto-gateway-api` junto a las audiencias de
+los servicios en el mismo token— **ya está puesto** en el realm base de `mto-platform`, así que
 activarla es solo cambiar dos variables:
 
 ```bash
@@ -341,7 +341,7 @@ plataforma deja de ser un fallo de arranque.
 ### El cliente en Keycloak
 
 El gateway aporta su propio cliente al realm con `keycloak/mto-gateway-partial-import.json`, igual
-que hacen `mto-configuration` y `mto-stock` con los suyos. No va dentro del realm base: ese fichero
+que hacen los servicios de detrás con los suyos. No va dentro del realm base: ese fichero
 es el que **crea** el realm, y un compuesto que nombre un cliente que aún no existe aborta la
 importación entera.
 
@@ -360,7 +360,7 @@ cd ../mto-platform && ./keycloak/apply-partials.sh
 El orden importa: `mto-ops-cross-service.json` nombra `mto-gateway-api`, así que el cliente tiene
 que existir antes. Sin ese paso, `/actuator/prometheus` del gateway queda cerrado incluso para quien
 tiene el perfil `mto-ops` — una importación parcial **reescribe el rol entero**, de modo que el
-fichero cross-service repite los permisos de los tres servicios y aplicarlo es lo que los junta.
+fichero cross-service repite los permisos de todos los clientes de API y aplicarlo es lo que los junta.
 
 `mto-platform/scripts/check_realm_consistency.py` recorre todos los ficheros en el orden en que se
 aplican y falla si alguno nombra un cliente o un rol que todavía no existe.
@@ -570,8 +570,8 @@ Dos cosas que conviene saber:
 > con el flag `00`, así que la correlación entre servicios se mantiene. Muestrear el 100% en un
 > servicio con tráfico real es caro y casi nunca hace falta.
 
-> **La cadena está completa.** Los tres servicios llevan ya el mismo montaje, así que una petición
-> se sigue entera: gateway → `mto-configuration` → (cola de RabbitMQ) → `mto-stock`. El salto por la
+> **La cadena está completa.** El gateway y los servicios de detrás llevan el mismo montaje, así que
+> una petición se sigue entera, por ejemplo: gateway → `mto-configuration` → (cola de RabbitMQ) → `mto-stock`. El salto por la
 > cola también: `mto-configuration` escribe `traceparent`/`tracestate` en las cabeceras AMQP al
 > publicar desde el outbox, y el consumidor de `mto-stock` los continúa
 > (`spring.rabbitmq.listener.simple.observation-enabled`).
@@ -579,21 +579,19 @@ Dos cosas que conviene saber:
 ### Dónde se ven las trazas
 
 El colector es un **Jaeger** *all-in-one*. Habla OTLP de forma nativa, así que no hace falta un
-OpenTelemetry Collector delante: los tres servicios exportan directamente a él. Los stacks de
-`mto-configuration` y de `mto-stock` traen cada uno el suyo, para poder levantarse solos igual que
-cada uno trae su Keycloak; el gateway no lleva ninguno porque su `compose.yaml` es solo el gateway.
+OpenTelemetry Collector delante: el gateway y los servicios exportan directamente a él. Lo levanta
+`mto-platform`, con el resto de la infraestructura compartida (Keycloak incluido); ni el gateway ni
+los servicios llevan uno, porque el `compose.yaml` de cada uno es solo su aplicación.
 
 | | |
 |---|---|
 | Interfaz web | http://localhost:16686 |
-| Ingesta OTLP por HTTP | `4318` — la que usan los tres servicios |
+| Ingesta OTLP por HTTP | `4318` — la que usan el gateway y los servicios |
 | Ingesta OTLP por gRPC | `4317` |
 
-Los tres lo alcanzan por el mismo nombre, **`otel.mto.local`**, resuelto por el host con
-`extra_hosts` — el mismo idioma que ya se usaba con Keycloak (`auth.mto.local`). Los dos Jaeger
-chocan en los mismos puertos del host si se levantan los dos stacks, exactamente como ya chocan
-Postgres, RabbitMQ y Keycloak, y **eso es justo lo que hace que funcione**: el que se quede con el
-puerto recibe todas las trazas, así que una petición que empieza aquí y termina en `mto-stock` se ve
+Todos lo alcanzan por el mismo nombre, **`otel.mto.local`**, resuelto por el host con
+`extra_hosts` — el mismo idioma que con Keycloak (`auth.mto.local`). Al ser uno solo, publicado en
+el host, recibe todas las trazas, así que una petición que empieza aquí y termina en `mto-stock` se ve
 entera en un solo visor. Un colector alcanzable solo dentro de cada stack dejaría cada traza
 distribuida partida entre visores distintos.
 
@@ -618,8 +616,8 @@ plataforma no usa baggage en ningún sitio, así que hacerlo aquí sería invent
 ## Observabilidad
 
 - `/actuator/health`, `/actuator/health/readiness`, `/actuator/health/liveness`, `/actuator/info` y
-  `/actuator/prometheus`, el mismo juego que los otros dos servicios, para que un solo *job* de
-  Prometheus recoja los tres.
+  `/actuator/prometheus`, el mismo juego que los servicios de detrás, para que un solo *job* de
+  Prometheus los recoja a todos.
 - El estado de los circuitos aparece en `/actuator/health` como componente informativo, pero **no**
   decide el estado global: un circuito abierto significa que `mto-stock` está mal, no el gateway, y
   no debe sacarlo del balanceador.
@@ -700,7 +698,7 @@ src/main/java/com/alejandro/mtogateway/
 │   ├── SecurityConfiguration.java              cadena de filtros, CORS y JwtDecoder
 │   ├── SecurityProperties.java                 app.security (record @Validated)
 │   ├── SecurityRoles.java                      ops-metrics / ops-write
-│   ├── JwtAudienceValidator.java               copia literal de la de los otros dos servicios
+│   ├── JwtAudienceValidator.java               copia literal de la de los servicios de detrás
 │   ├── KeycloakJwtAuthenticationConverter.java claims -> autoridades
 │   └── GatewayAuthenticationErrorHandler.java  401 y 403 como problem+json
 ├── filter/
