@@ -5,13 +5,13 @@ package com.alejandro.mtogateway.configuration.security;
  * formato que esperan {@code hasRole(...)} y {@code hasAnyRole(...)}.
  *
  * <p>La lista es deliberadamente corta. El gateway <b>no</b> replica la matriz de permisos de
- * negocio de {@code mto-configuration} ni la de {@code mto-stock}: quién puede leer un material o
+ * negocio de los servicios de detrás: quién puede leer un material o
  * borrar una estación lo sigue decidiendo el servicio que es dueño de ese dato. Mantener aquí una
  * copia de esas reglas crearía una segunda fuente de verdad que se desincronizaría con la primera
  * ruta nueva. Lo único que el gateway autoriza por su cuenta es su propio Actuator, que es suyo y de
  * nadie más.</p>
  *
- * <p>Se usan los mismos nombres que en los otros dos servicios a propósito: así un perfil de
+ * <p>Se usan los mismos nombres que en los servicios de detrás a propósito: así un perfil de
  * operación es el mismo concepto en toda la plataforma. Eso sí, son roles <em>de cliente</em>, de
  * modo que hay que declararlos en el cliente {@code mto-gateway-api} del realm; ver README.md.</p>
  */

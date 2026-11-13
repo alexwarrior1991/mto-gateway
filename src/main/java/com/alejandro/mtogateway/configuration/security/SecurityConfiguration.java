@@ -34,13 +34,13 @@ import java.util.List;
  * El gateway es el <b>borde de autenticación</b>: comprueba que el token está firmado por el realm,
  * que lo emitió quien dice y que sigue vigente, y rechaza el tráfico anónimo antes de gastar una
  * conexión contra un servicio. La <b>autorización</b> —quién puede leer qué y quién puede borrar
- * qué— se queda donde vive el dato, en {@code mto-configuration} y {@code mto-stock}. Duplicar aquí
+ * qué— se queda donde vive el dato, en cada servicio de detrás. Duplicar aquí
  * su matriz de roles crearía una segunda fuente de verdad que se desincronizaría con la primera ruta
  * nueva, y además haría falta tocar el gateway para cada permiso nuevo de cualquier servicio.
  *
  * <p>La cabecera {@code Authorization} llega intacta al servicio de destino: no es <i>hop-by-hop</i>,
  * así que el proxy la reenvía tal cual y ninguna ruta la borra. Tampoco se usa {@code TokenRelay},
- * que cambiaría el token del usuario por el del gateway: los dos servicios auditan a la persona, no
+ * que cambiaría el token del usuario por el del gateway: los servicios de detrás auditan a la persona, no
  * al proxy.</p>
  */
 @Configuration
@@ -53,7 +53,7 @@ public class SecurityConfiguration {
      * medio es un comodín de un solo segmento, de modo que un tercer servicio ferroviario queda
      * cubierto sin tocar esta clase.
      *
-     * <p>No abre nada que estuviera cerrado: los dos servicios ya sirven {@code /actuator/health}
+     * <p>No abre nada que estuviera cerrado: los servicios ya sirven {@code /actuator/health}
      * sin autenticar y con {@code show-details: when-authorized}, así que lo que se ve por aquí es
      * exactamente lo mismo que se ve llamándolos de frente. A cambio, comprobar que el enrutado
      * funciona no exige montar Keycloak.</p>
@@ -238,7 +238,7 @@ public class SecurityConfiguration {
     /**
      * En el gateway la validación de audiencia viene <b>desactivada</b> de serie, y es una decisión
      * y no un descuido: la audiencia es por servicio ({@code mto-configuration-api},
-     * {@code mto-stock-api}) y cada uno valida la suya. Exigir aquí una audiencia propia obligaría a
+     * {@code mto-stock-api}, …) y cada uno valida la suya. Exigir aquí una audiencia propia obligaría a
      * declarar {@code mto-gateway-api} en el <i>audience mapper</i> de todos los clientes del realm,
      * y hasta que eso ocurra el gateway rechazaría tokens que los servicios sí aceptan.
      *
