@@ -45,7 +45,7 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
 
     /**
      * Lo que llega de fuera se acota antes de reutilizarlo: este valor acaba en una cabecera
-     * saliente y en cada línea de log de tres servicios, de modo que un CR/LF permitiría partir la
+     * saliente y en cada línea de log del gateway y de los servicios por los que pasa, de modo que un CR/LF permitiría partir la
      * línea e inventarse entradas de log, o colar una cabecera entera contra el servicio de destino.
      *
      * <p>Un valor inválido no se sanea ni se rechaza con un 400: se sustituye por uno nuevo. Un 400

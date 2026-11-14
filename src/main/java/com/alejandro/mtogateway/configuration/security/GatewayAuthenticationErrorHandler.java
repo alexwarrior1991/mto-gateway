@@ -29,9 +29,9 @@ import java.net.URI;
  * añaden {@code error} y {@code error_description}. Sin esa cabecera el cliente no puede saber si le
  * toca refrescar el token o volver a autenticar, y acaba tratando cualquier 401 igual.</p>
  *
- * <p>El cuerpo se escribe aquí como <i>Problem Details</i> (RFC 9457), igual que el de los dos
- * servicios de detrás, para que un cliente no necesite dos <i>parsers</i> según quién le haya
- * rechazado. En {@code mto-configuration} lo escribe un {@code @ControllerAdvice} a través del
+ * <p>El cuerpo se escribe aquí como <i>Problem Details</i> (RFC 9457), el formato de
+ * {@code mto-configuration} y de {@code mto-users}, para no añadir otro más a los que un cliente ya
+ * tiene que leer (los demás servicios de detrás responden con su propio JSON de error). En {@code mto-configuration} lo escribe un {@code @ControllerAdvice} a través del
  * {@code HandlerExceptionResolver}; el gateway no tiene controladores de negocio ni ese advice, así
  * que lo serializa directamente.</p>
  *

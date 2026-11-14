@@ -15,8 +15,8 @@ import java.util.List;
  * <p>Keycloak no incluye el {@code client_id} del resource server en {@code aud} por su cuenta; hace
  * falta un <em>audience mapper</em> en el cliente que pide el token.</p>
  *
- * <p>Es una copia literal de la clase homónima de {@code mto-configuration} y {@code mto-stock}: los
- * tres servicios validan la audiencia igual, y una variante propia solo serviría para que un día
+ * <p>Es una copia literal de la clase homónima de los servicios de detrás: todos
+ * validan la audiencia igual, y una variante propia solo serviría para que un día
  * dejaran de hacerlo.</p>
  */
 public class JwtAudienceValidator implements OAuth2TokenValidator<Jwt> {
